@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEVOX FARMA - Registro de Asistencia</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        :root {
+            --naranja: #ea8511;
+            --naranja-hover: #d47610;
+            --naranja-light: #fef7ed;
+            --naranja-border: #fcd9a8;
+            --negro: #1d120e;
+            --texto: #1d120e;
+            --texto-sec: #6b6b70;
+            --gris: #afaeb3;
+            --gris-border: #e5e5e7;
+            --gris-bg: #f7f7f8;
+            --blanco: #ffffff;
+            --verde: #16a34a;
+            --verde-light: #f0fdf4;
+            --verde-border: #bbf7d0;
+            --rojo: #dc2626;
+            --rojo-light: #fef2f2;
+            --rojo-border: #fecaca;
+            --salida: #b45309;
+            --salida-light: #fffbeb;
+            --salida-border: #fde68a;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--gris-bg);
+            color: var(--texto);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+        }
+
+        .container {
+            background: var(--blanco);
+            border: 1px solid var(--gris-border);
+            border-radius: 16px;
+            padding: 40px 32px;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--negro);
+            text-transform: uppercase;
+        }
+
+        .logo-accent { color: var(--naranja); }
+
+        .subtitle {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--gris);
+            margin-top: 4px;
+            margin-bottom: 28px;
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--gris-border);
+            margin-bottom: 24px;
+        }
+
+        .status-box {
+            border-radius: 12px;
+            padding: 28px 20px;
+            margin: 8px 0;
+        }
+
+        .status-loading {
+            background: var(--gris-bg);
+            border: 1px solid var(--gris-border);
+        }
+
+        .status-success {
+            background: var(--verde-light);
+            border: 1px solid var(--verde-border);
+        }
+
+        .status-error {
+            background: var(--rojo-light);
+            border: 1px solid var(--rojo-border);
+        }
+
+        .spinner {
+            border: 3px solid var(--gris-border);
+            border-top: 3px solid var(--naranja);
+            border-radius: 50%;
+            width: 40px; height: 40px;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .nombre {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--negro);
+            margin-bottom: 10px;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            padding: 6px 20px;
+            border-radius: 6px;
+        }
+
+        .badge-entrada {
+            background: var(--verde-light);
+            border: 1px solid var(--verde-border);
+            color: var(--verde);
+        }
+
+        .badge-salida {
+            background: var(--salida-light);
+            border: 1px solid var(--salida-border);
+            color: var(--salida);
+        }
+
+        .hora {
+            font-size: 13px;
+            color: var(--texto-sec);
+            margin-top: 12px;
+        }
+
+        .msg {
+            font-size: 14px;
+            color: var(--texto-sec);
+            line-height: 1.6;
+        }
+
+        .msg-error { color: var(--rojo); }
+
+        .icon { font-size: 40px; margin-bottom: 14px; line-height: 1; }
+
+        .hidden { display: none; }
+
+        .hint {
+            display: inline-block;
+            background: var(--naranja-light);
+            border: 1px solid var(--naranja-border);
+            color: var(--naranja);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 14px;
+            border-radius: 6px;
+            margin-top: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">NEVOX <span class="logo-accent">FARMA</span></div>
+        <div class="subtitle">Control de Asistencia</div>
+        <div class="divider"></div>
+
+        <div id="loading" class="status-box status-loading">
+            <div class="spinner"></div>
+            <p class="msg">Identificando dispositivo...</p>
+        </div>
+
+        <div id="resultado" class="status-box hidden"></div>
+
+        <div id="no-registrado" class="status-box status-error hidden">
+            <div class="icon">&#128241;</div>
+            <p class="msg msg-error">Este dispositivo no esta registrado.</p>
+            <span class="hint">Solicita a tu administrador el QR de vinculacion</span>
+        </div>
+    </div>
+
+    <script>
+        const TOKEN_KEY = "nevox_device_token";
+        const tokenQR = "{{ token_qr | default('') }}";
+
+        async function registrar() {
+            const tokenDispositivo = localStorage.getItem(TOKEN_KEY);
+            const loadingEl = document.getElementById("loading");
+            const resultadoEl = document.getElementById("resultado");
+            const noRegistradoEl = document.getElementById("no-registrado");
+
+            if (!tokenDispositivo) {
+                loadingEl.classList.add("hidden");
+                noRegistradoEl.classList.remove("hidden");
+                return;
+            }
+
+            if (!tokenQR) {
+                loadingEl.classList.add("hidden");
+                resultadoEl.classList.remove("hidden");
+                resultadoEl.className = "status-box status-error";
+                resultadoEl.innerHTML = '<div class="icon">&#9888;&#65039;</div><p class="msg msg-error">No se recibio un token QR valido.<br>Escanea el QR de la pantalla de entrada.</p>';
+                return;
+            }
+
+            try {
+                const resp = await fetch("/api/checkin", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token_qr: tokenQR, token_dispositivo: tokenDispositivo })
+                });
+                const data = await resp.json();
+
+                loadingEl.classList.add("hidden");
+                resultadoEl.classList.remove("hidden");
+
+                if (data.ok) {
+                    const badgeClass = data.tipo === "entrada" ? "badge-entrada" : "badge-salida";
+                    resultadoEl.className = "status-box status-success";
+                    resultadoEl.innerHTML = `
+                        <div class="icon">${data.tipo === "entrada" ? "&#9989;" : "&#128682;"}</div>
+                        <p class="nombre">${data.nombre}</p>
+                        <span class="badge ${badgeClass}">${data.tipo.toUpperCase()}</span>
+                        <p class="hora">${new Date().toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</p>
+                    `;
+                } else {
+                    resultadoEl.className = "status-box status-error";
+                    resultadoEl.innerHTML = `<div class="icon">&#10060;</div><p class="msg msg-error">${data.mensaje}</p>`;
+                }
+            } catch (err) {
+                loadingEl.classList.add("hidden");
+                resultadoEl.classList.remove("hidden");
+                resultadoEl.className = "status-box status-error";
+                resultadoEl.innerHTML = '<div class="icon">&#10060;</div><p class="msg msg-error">Error de conexion.<br>Verifica que estas en la misma red WiFi.</p>';
+            }
+        }
+
+        if (tokenQR) {
+            registrar();
+        } else {
+            document.getElementById("loading").classList.add("hidden");
+            document.getElementById("resultado").classList.remove("hidden");
+            document.getElementById("resultado").className = "status-box status-loading";
+            document.getElementById("resultado").innerHTML = '<div class="icon">&#128247;</div><p class="msg">Escanea el QR de la pantalla de entrada<br>para registrar tu asistencia.</p>';
+        }
+    </script>
+</body>
+</html>

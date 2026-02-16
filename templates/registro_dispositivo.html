@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEVOX FARMA - Registro de Dispositivo</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        :root {
+            --naranja: #ea8511;
+            --naranja-hover: #d47610;
+            --naranja-light: #fef7ed;
+            --naranja-border: #fcd9a8;
+            --negro: #1d120e;
+            --texto: #1d120e;
+            --texto-sec: #6b6b70;
+            --gris: #afaeb3;
+            --gris-border: #e5e5e7;
+            --gris-bg: #f7f7f8;
+            --blanco: #ffffff;
+            --verde: #16a34a;
+            --verde-light: #f0fdf4;
+            --verde-border: #bbf7d0;
+            --rojo: #dc2626;
+            --rojo-light: #fef2f2;
+            --rojo-border: #fecaca;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--gris-bg);
+            color: var(--texto);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+        }
+
+        .container {
+            background: var(--blanco);
+            border: 1px solid var(--gris-border);
+            border-radius: 16px;
+            padding: 40px 32px;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--negro);
+            text-transform: uppercase;
+        }
+
+        .logo-accent { color: var(--naranja); }
+
+        .subtitle {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--gris);
+            margin-top: 4px;
+            margin-bottom: 28px;
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--gris-border);
+            margin-bottom: 24px;
+        }
+
+        .employee-name {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--negro);
+            margin-bottom: 2px;
+        }
+
+        .employee-dept {
+            font-size: 13px;
+            color: var(--texto-sec);
+            margin-bottom: 24px;
+        }
+
+        .info-box {
+            background: var(--gris-bg);
+            border: 1px solid var(--gris-border);
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .info-box p {
+            font-size: 13px;
+            color: var(--texto-sec);
+            line-height: 1.6;
+        }
+
+        .info-box strong { color: var(--negro); }
+
+        .btn {
+            display: block;
+            width: 100%;
+            background: var(--naranja);
+            color: #fff;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .btn:hover { background: var(--naranja-hover); }
+
+        .btn:active { transform: scale(0.99); }
+
+        .btn:disabled {
+            background: var(--gris-border);
+            color: var(--gris);
+            cursor: not-allowed;
+        }
+
+        .status-box {
+            border-radius: 12px;
+            padding: 28px 20px;
+            margin-top: 16px;
+        }
+
+        .status-success {
+            background: var(--verde-light);
+            border: 1px solid var(--verde-border);
+        }
+
+        .status-error {
+            background: var(--rojo-light);
+            border: 1px solid var(--rojo-border);
+        }
+
+        .icon { font-size: 40px; margin-bottom: 14px; line-height: 1; }
+
+        .msg { font-size: 14px; line-height: 1.6; }
+        .msg-ok { color: var(--verde); }
+        .msg-error { color: var(--rojo); }
+        .msg-secondary { color: var(--texto-sec); font-size: 13px; margin-top: 12px; }
+
+        .hidden { display: none; }
+
+        .warning {
+            background: var(--naranja-light);
+            border: 1px solid var(--naranja-border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 16px;
+            font-size: 12px;
+            color: var(--naranja);
+            line-height: 1.5;
+            text-align: left;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">NEVOX <span class="logo-accent">FARMA</span></div>
+        <div class="subtitle">Vinculacion de Dispositivo</div>
+        <div class="divider"></div>
+
+        <div id="registro-form">
+            <p class="employee-name">{{ empleado.nombre }}</p>
+            <p class="employee-dept">{{ empleado.departamento }}</p>
+
+            <div class="info-box">
+                <p>Este proceso vinculara <strong>tu celular</strong> con tu cuenta de empleado. Solo tendras que hacerlo <strong>una vez</strong>.</p>
+            </div>
+
+            {% if empleado.token_dispositivo %}
+            <div class="warning">
+                Este empleado ya tiene un dispositivo vinculado. Al continuar, el dispositivo anterior dejara de funcionar.
+            </div>
+            {% endif %}
+
+            <button id="btn-registrar" class="btn" onclick="registrarDispositivo()">
+                Vincular este dispositivo
+            </button>
+        </div>
+
+        <div id="resultado" class="hidden"></div>
+    </div>
+
+    <script>
+        const TOKEN_KEY = "nevox_device_token";
+        const tokenReg = "{{ token_reg }}";
+
+        async function registrarDispositivo() {
+            const btn = document.getElementById("btn-registrar");
+            const resultadoEl = document.getElementById("resultado");
+            btn.disabled = true;
+            btn.textContent = "Vinculando...";
+
+            try {
+                const resp = await fetch("/api/registro-dispositivo", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token_reg: tokenReg })
+                });
+                const data = await resp.json();
+
+                if (data.ok) {
+                    localStorage.setItem(TOKEN_KEY, data.token_dispositivo);
+                    document.getElementById("registro-form").classList.add("hidden");
+                    resultadoEl.classList.remove("hidden");
+                    resultadoEl.className = "status-box status-success";
+                    resultadoEl.innerHTML = `
+                        <div class="icon">&#9989;</div>
+                        <p class="msg msg-ok"><strong>${data.nombre}</strong></p>
+                        <p class="msg msg-ok">Dispositivo vinculado correctamente.</p>
+                        <p class="msg-secondary">Ya puedes escanear el QR de la entrada para registrar tu asistencia.</p>
+                    `;
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = "Vincular este dispositivo";
+                    resultadoEl.classList.remove("hidden");
+                    resultadoEl.className = "status-box status-error";
+                    resultadoEl.innerHTML = `<div class="icon">&#10060;</div><p class="msg msg-error">${data.mensaje}</p>`;
+                }
+            } catch (err) {
+                btn.disabled = false;
+                btn.textContent = "Vincular este dispositivo";
+                resultadoEl.classList.remove("hidden");
+                resultadoEl.className = "status-box status-error";
+                resultadoEl.innerHTML = '<div class="icon">&#10060;</div><p class="msg msg-error">Error de conexion.<br>Verifica que estas en la misma red WiFi.</p>';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEVOX FARMA</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        :root {
+            --naranja: #ea8511;
+            --negro: #1d120e;
+            --texto-sec: #6b6b70;
+            --gris: #afaeb3;
+            --gris-border: #e5e5e7;
+            --gris-bg: #f7f7f8;
+            --blanco: #ffffff;
+            --verde: #16a34a;
+            --verde-light: #f0fdf4;
+            --verde-border: #bbf7d0;
+            --rojo: #dc2626;
+            --rojo-light: #fef2f2;
+            --rojo-border: #fecaca;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--gris-bg);
+            color: var(--negro);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+        }
+
+        .container {
+            background: var(--blanco);
+            border: 1px solid var(--gris-border);
+            border-radius: 16px;
+            padding: 40px 32px;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--negro);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .logo-accent { color: var(--naranja); }
+
+        .subtitle {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--gris);
+            margin-bottom: 28px;
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--gris-border);
+            margin-bottom: 24px;
+        }
+
+        .status-box { border-radius: 12px; padding: 28px 20px; }
+
+        .status-success {
+            background: var(--verde-light);
+            border: 1px solid var(--verde-border);
+        }
+
+        .status-error {
+            background: var(--rojo-light);
+            border: 1px solid var(--rojo-border);
+        }
+
+        .icon { font-size: 40px; margin-bottom: 14px; line-height: 1; }
+        .msg { font-size: 14px; line-height: 1.6; }
+        .msg-ok { color: var(--verde); }
+        .msg-error { color: var(--rojo); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">NEVOX <span class="logo-accent">FARMA</span></div>
+        <div class="subtitle">Control de Asistencia</div>
+        <div class="divider"></div>
+
+        {% if exito %}
+        <div class="status-box status-success">
+            <div class="icon">&#9989;</div>
+            <p class="msg msg-ok">{{ mensaje }}</p>
+        </div>
+        {% else %}
+        <div class="status-box status-error">
+            <div class="icon">&#10060;</div>
+            <p class="msg msg-error">{{ mensaje }}</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
