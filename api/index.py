@@ -21,8 +21,6 @@ from flask import (
     Flask, request, render_template, jsonify, session,
     redirect, url_for, send_file,
 )
-import qrcode
-from PIL import Image
 
 # ============================================================
 # CONFIG
@@ -342,12 +340,14 @@ def reg_validar(token):
 
 
 def qr_base64(data, size=8):
+    import qrcode
+    import qrcode.image.svg
     qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=size, border=2)
     qr.add_data(data)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 

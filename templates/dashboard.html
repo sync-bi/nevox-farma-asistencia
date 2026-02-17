@@ -86,7 +86,7 @@ async function refreshQR() {
     try {
         const resp = await fetch('/api/qr');
         const data = await resp.json();
-        document.getElementById('qr-image').src = 'data:image/png;base64,' + data.qr_base64;
+        document.getElementById('qr-image').src = 'data:image/svg+xml;base64,' + data.qr_base64;
         document.getElementById('qr-countdown').textContent = 'Actualiza en ' + data.remaining_seconds + 's';
         document.getElementById('qr-time').textContent = data.timestamp;
     } catch(e) {
