@@ -380,6 +380,25 @@ def health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
 
 
+def _get_client_ip():
+    """Obtiene la IP real del cliente (compatible con Vercel/proxies)."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("X-Real-Ip", request.remote_addr or "")
+
+
+def _check_ip_allowed():
+    """Verifica si la IP del cliente esta permitida. Retorna (ok, mensaje)."""
+    ip_permitida = db_get_config("ip_permitida")
+    if not ip_permitida:
+        return True, ""
+    client_ip = _get_client_ip()
+    if client_ip == ip_permitida:
+        return True, ""
+    return False, "Debes estar conectado a la red WiFi de la empresa para registrar asistencia."
+
+
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -424,6 +443,9 @@ def checkin():
 
 @app.route("/api/checkin", methods=["POST"])
 def api_checkin():
+    ip_ok, ip_msg = _check_ip_allowed()
+    if not ip_ok:
+        return jsonify({"ok": False, "mensaje": ip_msg}), 403
     data = request.get_json()
     if not data:
         return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
@@ -567,12 +589,18 @@ def api_admin_desvincular(eid):
     return jsonify({"ok": True})
 
 
+@app.route("/api/mi-ip")
+def api_mi_ip():
+    return jsonify({"ip": _get_client_ip()})
+
+
 @app.route("/api/admin/config", methods=["GET"])
 @admin_required
 def api_admin_get_config():
     return jsonify({
         "nombre_empresa": db_get_config("nombre_empresa") or "NEVOX FARMA",
         "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15",
+        "ip_permitida": db_get_config("ip_permitida") or "",
     })
 
 
@@ -584,6 +612,12 @@ def api_admin_save_config():
         return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
     if "nombre_empresa" in data:
         db_set_config("nombre_empresa", data["nombre_empresa"])
+    if "ip_permitida" in data:
+        ip = data["ip_permitida"].strip()
+        if ip:
+            db_set_config("ip_permitida", ip)
+        else:
+            db_set_config("ip_permitida", "")
     if "tolerancia_minutos" in data:
         try:
             t = int(data["tolerancia_minutos"])
