@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}NEVOX FARMA{% endblock %}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --naranja: #ea8511;
+            --naranja-hover: #d47610;
+            --naranja-light: #fef7ed;
+            --naranja-border: #fcd9a8;
+            --negro: #1d120e;
+            --texto: #1d120e;
+            --texto-sec: #6b6b70;
+            --gris: #afaeb3;
+            --gris-border: #e5e5e7;
+            --gris-bg: #f7f7f8;
+            --blanco: #ffffff;
+            --verde: #16a34a;
+            --verde-light: #f0fdf4;
+            --verde-border: #bbf7d0;
+            --rojo: #dc2626;
+            --rojo-light: #fef2f2;
+            --rojo-border: #fecaca;
+            --salida: #b45309;
+            --salida-light: #fffbeb;
+            --salida-border: #fde68a;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--gris-bg);
+            color: var(--texto);
+            min-height: 100vh;
+        }
+        .brand-strip { height: 4px; background: var(--naranja); }
+        .nav-bar {
+            background: var(--blanco);
+            border-bottom: 1px solid var(--gris-border);
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            height: 56px;
+        }
+        .nav-logo {
+            font-size: 18px;
+            font-weight: 800;
+            color: var(--negro);
+            text-decoration: none;
+            letter-spacing: 0.5px;
+        }
+        .nav-logo span { color: var(--naranja); }
+        .nav-links {
+            margin-left: auto;
+            display: flex;
+            gap: 4px;
+        }
+        .nav-links a {
+            color: var(--texto-sec);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: background 0.15s, color 0.15s;
+        }
+        .nav-links a:hover { background: var(--gris-bg); color: var(--texto); }
+        .nav-links a.active { background: var(--naranja-light); color: var(--naranja); font-weight: 600; }
+        .main-content { padding: 24px; max-width: 1200px; margin: 0 auto; }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.1s;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: var(--naranja); color: #fff; }
+        .btn-primary:hover { background: var(--naranja-hover); }
+        .btn-secondary { background: var(--blanco); color: var(--texto); border: 1px solid var(--gris-border); }
+        .btn-secondary:hover { background: var(--gris-bg); }
+        .btn-danger { background: var(--rojo-light); color: var(--rojo); border: 1px solid var(--rojo-border); }
+        .btn-danger:hover { background: #fee2e2; }
+        .btn-sm { padding: 6px 14px; font-size: 13px; }
+        .card {
+            background: var(--blanco);
+            border: 1px solid var(--gris-border);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--gris-border);
+            font-weight: 700;
+            font-size: 16px;
+        }
+        .card-body { padding: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--texto-sec);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--gris-bg);
+            border-bottom: 1px solid var(--gris-border);
+        }
+        td {
+            padding: 10px 14px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--gris-border);
+        }
+        tr:hover td { background: #fafafa; }
+        .badge {
+            display: inline-block;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 4px 12px;
+            border-radius: 6px;
+        }
+        .badge-entrada { background: var(--verde-light); color: var(--verde); border: 1px solid var(--verde-border); }
+        .badge-salida { background: var(--salida-light); color: var(--salida); border: 1px solid var(--salida-border); }
+        .badge-active { background: var(--verde-light); color: var(--verde); }
+        .badge-inactive { background: var(--gris-bg); color: var(--gris); }
+        .input-group { margin-bottom: 16px; }
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--texto-sec);
+            margin-bottom: 6px;
+        }
+        .input-group input, .input-group select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--gris-border);
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            color: var(--texto);
+            background: var(--blanco);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .input-group input:focus, .input-group select:focus {
+            border-color: var(--naranja);
+            box-shadow: 0 0 0 3px rgba(234,133,17,0.1);
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--gris-border);
+            margin-bottom: 20px;
+        }
+        .tab-btn {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--texto-sec);
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-btn:hover { color: var(--texto); }
+        .tab-btn.active { color: var(--naranja); border-bottom-color: var(--naranja); font-weight: 600; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: var(--blanco);
+            border-radius: 16px;
+            padding: 28px;
+            width: 100%;
+            max-width: 460px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+        }
+        .modal h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: var(--negro);
+        }
+        .modal-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        .counter-bar {
+            display: flex;
+            gap: 16px;
+            padding: 10px 16px;
+            background: var(--gris-bg);
+            border-top: 1px solid var(--gris-border);
+            border-radius: 0 0 12px 12px;
+            font-size: 13px;
+            color: var(--texto-sec);
+        }
+        .counter-bar span { font-weight: 600; }
+        @media (max-width: 768px) {
+            .nav-bar { padding: 0 12px; }
+            .nav-links a { padding: 8px 10px; font-size: 13px; }
+            .main-content { padding: 16px; }
+        }
+        {% block extra_css %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="brand-strip"></div>
+    <nav class="nav-bar">
+        <a href="/" class="nav-logo">NEVOX <span>FARMA</span></a>
+        <div class="nav-links">
+            <a href="/" class="{% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
+            <a href="/reportes" class="{% if active_page == 'reportes' %}active{% endif %}">Reportes</a>
+            <a href="/admin" class="{% if active_page == 'admin' %}active{% endif %}">Admin</a>
+        </div>
+    </nav>
+    <div class="main-content">
+        {% block content %}{% endblock %}
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

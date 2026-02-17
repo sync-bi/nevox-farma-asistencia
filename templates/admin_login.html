@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set active_page = "admin" %}
+
+{% block title %}NEVOX FARMA - Acceso Admin{% endblock %}
+
+{% block extra_css %}
+.login-container {
+    max-width: 400px;
+    margin: 60px auto;
+}
+.login-card .card-body { padding: 32px; }
+.login-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--negro);
+    margin-bottom: 6px;
+}
+.login-subtitle {
+    font-size: 14px;
+    color: var(--texto-sec);
+    margin-bottom: 24px;
+}
+.login-error {
+    background: var(--rojo-light);
+    border: 1px solid var(--rojo-border);
+    color: var(--rojo);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 16px;
+}
+{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="card login-card">
+        <div class="card-body">
+            <div class="login-title">Panel de Administracion</div>
+            <div class="login-subtitle">Ingresa la contrasena para continuar</div>
+
+            {% if error %}
+            <div class="login-error">{{ error }}</div>
+            {% endif %}
+
+            <form method="POST" action="/admin/login">
+                <div class="input-group">
+                    <label for="password">Contrasena</label>
+                    <input type="password" id="password" name="password" placeholder="Ingresa tu contrasena" required autofocus>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">Ingresar</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

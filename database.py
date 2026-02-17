@@ -1,96 +1,39 @@
 """
-Modulo de base de datos SQLite para el sistema de entradas y salidas.
-Maneja empleados, registros de asistencia y configuracion.
+Modulo de base de datos para el sistema de entradas y salidas.
+Usa Supabase (PostgreSQL) como backend.
 """
 
-import sqlite3
 import os
 import hashlib
-import secrets
 from datetime import datetime, date, timedelta
+from supabase import create_client
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "nevox_farma.db")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-
-def get_connection():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+_client = None
 
 
-def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS empleados (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,
-            departamento TEXT NOT NULL DEFAULT '',
-            hora_entrada TEXT NOT NULL DEFAULT '09:00',
-            hora_salida TEXT NOT NULL DEFAULT '18:00',
-            token_dispositivo TEXT,
-            activo INTEGER NOT NULL DEFAULT 1,
-            fecha_registro TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS registros (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            empleado_id INTEGER NOT NULL,
-            tipo TEXT NOT NULL CHECK(tipo IN ('entrada', 'salida')),
-            fecha_hora TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            token_usado TEXT,
-            FOREIGN KEY (empleado_id) REFERENCES empleados(id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS configuracion (
-            clave TEXT PRIMARY KEY,
-            valor TEXT NOT NULL
-        )
-    """)
-
-    # Inicializar configuracion por defecto
-    defaults = {
-        "admin_password": hashlib.sha256("admin123".encode()).hexdigest(),
-        "secret_key": secrets.token_hex(32),
-        "nombre_empresa": "NEVOX FARMA",
-        "tolerancia_minutos": "15",
-    }
-    for clave, valor in defaults.items():
-        cursor.execute(
-            "INSERT OR IGNORE INTO configuracion (clave, valor) VALUES (?, ?)",
-            (clave, valor),
-        )
-
-    conn.commit()
-    conn.close()
+def _get_client():
+    global _client
+    if _client is None:
+        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _client
 
 
 # --- Configuracion ---
 
 def get_config(clave):
-    conn = get_connection()
-    row = conn.execute("SELECT valor FROM configuracion WHERE clave = ?", (clave,)).fetchone()
-    conn.close()
-    return row["valor"] if row else None
+    sb = _get_client()
+    result = sb.table("configuracion").select("valor").eq("clave", clave).execute()
+    if result.data:
+        return result.data[0]["valor"]
+    return None
 
 
 def set_config(clave, valor):
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO configuracion (clave, valor) VALUES (?, ?) "
-        "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor",
-        (clave, valor),
-    )
-    conn.commit()
-    conn.close()
+    sb = _get_client()
+    sb.table("configuracion").upsert({"clave": clave, "valor": valor}).execute()
 
 
 def verificar_password_admin(password):
@@ -106,109 +49,115 @@ def cambiar_password_admin(nuevo_password):
 # --- Empleados ---
 
 def crear_empleado(nombre, departamento="", hora_entrada="09:00", hora_salida="18:00"):
-    conn = get_connection()
-    cursor = conn.execute(
-        "INSERT INTO empleados (nombre, departamento, hora_entrada, hora_salida) VALUES (?, ?, ?, ?)",
-        (nombre, departamento, hora_entrada, hora_salida),
-    )
-    empleado_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return empleado_id
+    sb = _get_client()
+    result = sb.table("empleados").insert({
+        "nombre": nombre,
+        "departamento": departamento,
+        "hora_entrada": hora_entrada,
+        "hora_salida": hora_salida,
+    }).execute()
+    return result.data[0]["id"]
 
 
 def obtener_empleado(empleado_id):
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM empleados WHERE id = ?", (empleado_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    sb = _get_client()
+    result = sb.table("empleados").select("*").eq("id", empleado_id).execute()
+    if result.data:
+        row = result.data[0]
+        row["activo"] = 1 if row["activo"] else 0
+        return row
+    return None
 
 
 def obtener_empleado_por_token(token_dispositivo):
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM empleados WHERE token_dispositivo = ? AND activo = 1",
-        (token_dispositivo,),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    sb = _get_client()
+    result = (
+        sb.table("empleados")
+        .select("*")
+        .eq("token_dispositivo", token_dispositivo)
+        .eq("activo", True)
+        .execute()
+    )
+    if result.data:
+        row = result.data[0]
+        row["activo"] = 1 if row["activo"] else 0
+        return row
+    return None
 
 
 def listar_empleados(solo_activos=True):
-    conn = get_connection()
+    sb = _get_client()
+    query = sb.table("empleados").select("*")
     if solo_activos:
-        rows = conn.execute("SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre").fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM empleados ORDER BY nombre").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+        query = query.eq("activo", True)
+    result = query.order("nombre").execute()
+    for row in result.data:
+        row["activo"] = 1 if row["activo"] else 0
+    return result.data
 
 
-def actualizar_empleado(empleado_id, nombre=None, departamento=None, hora_entrada=None, hora_salida=None, activo=None):
-    conn = get_connection()
-    campos = []
-    valores = []
+def actualizar_empleado(empleado_id, nombre=None, departamento=None,
+                        hora_entrada=None, hora_salida=None, activo=None):
+    campos = {}
     if nombre is not None:
-        campos.append("nombre = ?")
-        valores.append(nombre)
+        campos["nombre"] = nombre
     if departamento is not None:
-        campos.append("departamento = ?")
-        valores.append(departamento)
+        campos["departamento"] = departamento
     if hora_entrada is not None:
-        campos.append("hora_entrada = ?")
-        valores.append(hora_entrada)
+        campos["hora_entrada"] = hora_entrada
     if hora_salida is not None:
-        campos.append("hora_salida = ?")
-        valores.append(hora_salida)
+        campos["hora_salida"] = hora_salida
     if activo is not None:
-        campos.append("activo = ?")
-        valores.append(activo)
+        campos["activo"] = bool(activo)
     if campos:
-        valores.append(empleado_id)
-        conn.execute(f"UPDATE empleados SET {', '.join(campos)} WHERE id = ?", valores)
-        conn.commit()
-    conn.close()
+        sb = _get_client()
+        sb.table("empleados").update(campos).eq("id", empleado_id).execute()
 
 
 def vincular_dispositivo(empleado_id, token_dispositivo):
-    conn = get_connection()
-    conn.execute(
-        "UPDATE empleados SET token_dispositivo = ? WHERE id = ?",
-        (token_dispositivo, empleado_id),
-    )
-    conn.commit()
-    conn.close()
+    sb = _get_client()
+    sb.table("empleados").update(
+        {"token_dispositivo": token_dispositivo}
+    ).eq("id", empleado_id).execute()
 
 
 def desvincular_dispositivo(empleado_id):
-    conn = get_connection()
-    conn.execute("UPDATE empleados SET token_dispositivo = NULL WHERE id = ?", (empleado_id,))
-    conn.commit()
-    conn.close()
+    sb = _get_client()
+    sb.table("empleados").update(
+        {"token_dispositivo": None}
+    ).eq("id", empleado_id).execute()
 
 
 # --- Registros ---
 
 def registrar_asistencia(empleado_id, tipo, token_usado=None):
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO registros (empleado_id, tipo, token_usado) VALUES (?, ?, ?)",
-        (empleado_id, tipo, token_usado),
-    )
-    conn.commit()
-    conn.close()
+    sb = _get_client()
+    sb.table("registros").insert({
+        "empleado_id": empleado_id,
+        "tipo": tipo,
+        "token_usado": token_usado,
+    }).execute()
 
 
 def obtener_ultimo_registro(empleado_id, fecha=None):
     if fecha is None:
         fecha = date.today().isoformat()
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM registros WHERE empleado_id = ? AND date(fecha_hora) = ? ORDER BY fecha_hora DESC LIMIT 1",
-        (empleado_id, fecha),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    fecha_inicio = f"{fecha}T00:00:00"
+    fecha_fin = f"{fecha}T23:59:59"
+    sb = _get_client()
+    result = (
+        sb.table("registros")
+        .select("*")
+        .eq("empleado_id", empleado_id)
+        .gte("fecha_hora", fecha_inicio)
+        .lte("fecha_hora", fecha_fin)
+        .order("fecha_hora", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+    return None
 
 
 def obtener_siguiente_tipo(empleado_id):
@@ -221,41 +170,44 @@ def obtener_siguiente_tipo(empleado_id):
 def obtener_registros_dia(fecha=None):
     if fecha is None:
         fecha = date.today().isoformat()
-    conn = get_connection()
-    rows = conn.execute(
-        """SELECT r.*, e.nombre, e.departamento
-           FROM registros r
-           JOIN empleados e ON r.empleado_id = e.id
-           WHERE date(r.fecha_hora) = ?
-           ORDER BY r.fecha_hora DESC""",
-        (fecha,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    fecha_inicio = f"{fecha}T00:00:00"
+    fecha_fin = f"{fecha}T23:59:59"
+    sb = _get_client()
+    result = (
+        sb.table("registros")
+        .select("*, empleados(nombre, departamento)")
+        .gte("fecha_hora", fecha_inicio)
+        .lte("fecha_hora", fecha_fin)
+        .order("fecha_hora", desc=True)
+        .execute()
+    )
+    registros = []
+    for r in result.data:
+        emp = r.pop("empleados", {}) or {}
+        r["nombre"] = emp.get("nombre", "")
+        r["departamento"] = emp.get("departamento", "")
+        registros.append(r)
+    return registros
 
 
 def obtener_registros_rango(fecha_inicio, fecha_fin, empleado_id=None):
-    conn = get_connection()
+    sb = _get_client()
+    query = (
+        sb.table("registros")
+        .select("*, empleados(nombre, departamento)")
+        .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+        .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+    )
     if empleado_id:
-        rows = conn.execute(
-            """SELECT r.*, e.nombre, e.departamento
-               FROM registros r
-               JOIN empleados e ON r.empleado_id = e.id
-               WHERE date(r.fecha_hora) BETWEEN ? AND ? AND r.empleado_id = ?
-               ORDER BY r.fecha_hora""",
-            (fecha_inicio, fecha_fin, empleado_id),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT r.*, e.nombre, e.departamento
-               FROM registros r
-               JOIN empleados e ON r.empleado_id = e.id
-               WHERE date(r.fecha_hora) BETWEEN ? AND ?
-               ORDER BY r.fecha_hora""",
-            (fecha_inicio, fecha_fin),
-        ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+        query = query.eq("empleado_id", empleado_id)
+    result = query.order("fecha_hora").execute()
+    registros = []
+    for r in result.data:
+        emp = r.pop("empleados", {}) or {}
+        r["nombre"] = emp.get("nombre", "")
+        r["departamento"] = emp.get("departamento", "")
+        registros.append(r)
+    return registros
 
 
 def calcular_horas_trabajadas(empleado_id, fecha_inicio, fecha_fin):
@@ -275,64 +227,53 @@ def calcular_horas_trabajadas(empleado_id, fecha_inicio, fecha_fin):
     return round(horas, 2)
 
 
+def obtener_retardos(fecha_inicio, fecha_fin):
+    sb = _get_client()
+    empleados = listar_empleados()
+
+    try:
+        result = sb.rpc("obtener_primera_entrada_por_dia", {
+            "p_fecha_inicio": fecha_inicio,
+            "p_fecha_fin": fecha_fin,
+        }).execute()
+        entradas_por_dia = result.data or []
+    except Exception:
+        entradas_por_dia = []
+
+    emp_map = {e["id"]: e for e in empleados}
+    retardos = []
+
+    for entry in entradas_por_dia:
+        emp = emp_map.get(entry["empleado_id"])
+        if not emp:
+            continue
+        hora_limite = emp["hora_entrada"]
+        hora_registro = entry["primera_hora"]
+
+        if hora_registro > hora_limite:
+            tolerancia = int(get_config("tolerancia_minutos") or "15")
+            h, m = map(int, hora_limite.split(":"))
+            limite_dt = datetime.combine(date.today(), datetime.min.time().replace(hour=h, minute=m))
+            limite_con_tolerancia = (limite_dt + timedelta(minutes=tolerancia)).strftime("%H:%M")
+            retardos.append({
+                "empleado_id": emp["id"],
+                "nombre": emp["nombre"],
+                "departamento": emp["departamento"],
+                "fecha": entry["fecha"],
+                "hora_programada": hora_limite,
+                "hora_registro": hora_registro,
+                "con_tolerancia": hora_registro <= limite_con_tolerancia,
+            })
+
+    return retardos
+
+
 def limpiar_registros():
-    """Elimina todos los registros de asistencia."""
-    conn = get_connection()
-    conn.execute("DELETE FROM registros")
-    conn.execute("DELETE FROM sqlite_sequence WHERE name = 'registros'")
-    conn.commit()
-    conn.close()
+    sb = _get_client()
+    sb.table("registros").delete().neq("id", 0).execute()
 
 
 def limpiar_registros_y_empleados():
-    """Elimina todos los registros de asistencia y todos los empleados."""
-    conn = get_connection()
-    conn.execute("DELETE FROM registros")
-    conn.execute("DELETE FROM empleados")
-    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('registros', 'empleados')")
-    conn.commit()
-    conn.close()
-
-
-def obtener_retardos(fecha_inicio, fecha_fin):
-    conn = get_connection()
-    empleados = listar_empleados()
-    retardos = []
-
-    for emp in empleados:
-        rows = conn.execute(
-            """SELECT fecha_hora FROM registros
-               WHERE empleado_id = ? AND tipo = 'entrada' AND date(fecha_hora) BETWEEN ? AND ?
-               ORDER BY fecha_hora""",
-            (emp["id"], fecha_inicio, fecha_fin),
-        ).fetchall()
-
-        hora_limite = emp["hora_entrada"]
-        for row in rows:
-            dt = datetime.fromisoformat(row["fecha_hora"])
-            fecha_str = dt.date().isoformat()
-            # Primera entrada del dia
-            primera_del_dia = conn.execute(
-                """SELECT MIN(fecha_hora) as primera FROM registros
-                   WHERE empleado_id = ? AND tipo = 'entrada' AND date(fecha_hora) = ?""",
-                (emp["id"], fecha_str),
-            ).fetchone()
-            if primera_del_dia and primera_del_dia["primera"] == row["fecha_hora"]:
-                hora_registro = dt.strftime("%H:%M")
-                if hora_registro > hora_limite:
-                    tolerancia = int(get_config("tolerancia_minutos") or "15")
-                    h, m = map(int, hora_limite.split(":"))
-                    limite_con_tolerancia = (datetime.combine(dt.date(), datetime.min.time().replace(hour=h, minute=m))
-                                             + timedelta(minutes=tolerancia)).strftime("%H:%M")
-                    retardos.append({
-                        "empleado_id": emp["id"],
-                        "nombre": emp["nombre"],
-                        "departamento": emp["departamento"],
-                        "fecha": fecha_str,
-                        "hora_programada": hora_limite,
-                        "hora_registro": hora_registro,
-                        "con_tolerancia": hora_registro <= limite_con_tolerancia,
-                    })
-
-    conn.close()
-    return retardos
+    sb = _get_client()
+    sb.table("registros").delete().neq("id", 0).execute()
+    sb.table("empleados").delete().neq("id", 0).execute()

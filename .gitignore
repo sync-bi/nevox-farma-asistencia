@@ -7,3 +7,5 @@ data/*.xlsx
 *.egg-info/
 dist/
 build/
+.vercel/
+node_modules/

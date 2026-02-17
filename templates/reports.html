@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% set active_page = "reportes" %}
+
+{% block title %}NEVOX FARMA - Reportes{% endblock %}
+
+{% block extra_css %}
+.reports-header h1 { font-size: 22px; color: var(--negro); margin-bottom: 20px; }
+.filter-bar {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    padding: 16px 20px;
+    background: var(--gris-bg);
+    border-bottom: 1px solid var(--gris-border);
+    border-radius: 12px 12px 0 0;
+}
+.filter-bar .input-group { margin-bottom: 0; }
+.filter-bar label { font-size: 12px; }
+.filter-bar input, .filter-bar select {
+    padding: 8px 12px;
+    font-size: 13px;
+    width: auto;
+}
+.report-table { max-height: 450px; overflow-y: auto; }
+.badge-retardo { background: var(--rojo-light); color: var(--rojo); border: 1px solid var(--rojo-border); }
+.badge-tolerancia { background: var(--salida-light); color: var(--salida); border: 1px solid var(--salida-border); }
+.empty-msg { text-align: center; color: var(--gris); padding: 40px; }
+@media (max-width: 768px) {
+    .filter-bar { flex-direction: column; align-items: stretch; }
+}
+{% endblock %}
+
+{% block content %}
+<div class="reports-header">
+    <h1>Reportes</h1>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('horas', this)">Horas Trabajadas</button>
+    <button class="tab-btn" onclick="switchTab('retardos', this)">Retardos</button>
+    <button class="tab-btn" onclick="switchTab('export', this)">Exportar a Excel</button>
+</div>
+
+<!-- HORAS TAB -->
+<div id="tab-horas" class="tab-content active">
+    <div class="card">
+        <div class="filter-bar">
+            <div class="input-group">
+                <label>Desde</label>
+                <input type="date" id="horas-desde">
+            </div>
+            <div class="input-group">
+                <label>Hasta</label>
+                <input type="date" id="horas-hasta">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="queryHours()">Consultar</button>
+        </div>
+        <div class="report-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Empleado</th>
+                        <th>Departamento</th>
+                        <th>Horas Trabajadas</th>
+                    </tr>
+                </thead>
+                <tbody id="horas-body">
+                    <tr><td colspan="3" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- RETARDOS TAB -->
+<div id="tab-retardos" class="tab-content">
+    <div class="card">
+        <div class="filter-bar">
+            <div class="input-group">
+                <label>Desde</label>
+                <input type="date" id="ret-desde">
+            </div>
+            <div class="input-group">
+                <label>Hasta</label>
+                <input type="date" id="ret-hasta">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="queryTardiness()">Consultar</button>
+        </div>
+        <div class="report-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Empleado</th>
+                        <th>Departamento</th>
+                        <th>Fecha</th>
+                        <th>H. Programada</th>
+                        <th>H. Registro</th>
+                        <th>Estado</th>
+                    </tr>
+                </thead>
+                <tbody id="ret-body">
+                    <tr><td colspan="6" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- EXPORT TAB -->
+<div id="tab-export" class="tab-content">
+    <div class="card">
+        <div class="card-body">
+            <h3 style="font-size:16px;margin-bottom:20px;color:var(--negro);">Exportar registros a archivo Excel</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:500px;">
+                <div class="input-group">
+                    <label>Desde</label>
+                    <input type="date" id="exp-desde">
+                </div>
+                <div class="input-group">
+                    <label>Hasta</label>
+                    <input type="date" id="exp-hasta">
+                </div>
+                <div class="input-group" style="grid-column:1/-1;">
+                    <label>Empleado</label>
+                    <select id="exp-empleado">
+                        <option value="">-- Todos --</option>
+                    </select>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="exportExcel()" style="margin-top:16px;">Exportar a Excel</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchTab(tab, btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    btn.classList.add('active');
+}
+
+function setDefaultDates() {
+    const today = new Date();
+    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    const todayStr = today.toISOString().split('T')[0];
+    const firstStr = firstDay.toISOString().split('T')[0];
+
+    document.getElementById('horas-desde').value = firstStr;
+    document.getElementById('horas-hasta').value = todayStr;
+    document.getElementById('ret-desde').value = firstStr;
+    document.getElementById('ret-hasta').value = todayStr;
+    document.getElementById('exp-desde').value = firstStr;
+    document.getElementById('exp-hasta').value = todayStr;
+}
+
+async function loadEmployeeSelect() {
+    try {
+        const resp = await fetch('/api/admin/empleados');
+        const data = await resp.json();
+        const sel = document.getElementById('exp-empleado');
+        data.empleados.filter(e => e.activo).forEach(e => {
+            const opt = document.createElement('option');
+            opt.value = e.id;
+            opt.textContent = e.nombre;
+            sel.appendChild(opt);
+        });
+    } catch(e) {}
+}
+
+async function queryHours() {
+    const desde = document.getElementById('horas-desde').value;
+    const hasta = document.getElementById('horas-hasta').value;
+    if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
+    const resp = await fetch(`/api/reportes/horas?desde=${desde}&hasta=${hasta}`);
+    const data = await resp.json();
+    const tbody = document.getElementById('horas-body');
+    if (data.datos.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-msg">Sin datos en este rango</td></tr>';
+    } else {
+        tbody.innerHTML = data.datos.map(r =>
+            `<tr><td>${r.nombre}</td><td>${r.departamento}</td><td>${r.horas.toFixed(2)} hrs</td></tr>`
+        ).join('');
+    }
+}
+
+async function queryTardiness() {
+    const desde = document.getElementById('ret-desde').value;
+    const hasta = document.getElementById('ret-hasta').value;
+    if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
+    const resp = await fetch(`/api/reportes/retardos?desde=${desde}&hasta=${hasta}`);
+    const data = await resp.json();
+    const tbody = document.getElementById('ret-body');
+    if (data.datos.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Sin retardos en este rango</td></tr>';
+    } else {
+        tbody.innerHTML = data.datos.map(r => {
+            const estado = r.con_tolerancia ? 'Dentro de tolerancia' : 'RETARDO';
+            const cls = r.con_tolerancia ? 'badge-tolerancia' : 'badge-retardo';
+            return `<tr>
+                <td>${r.nombre}</td>
+                <td>${r.departamento}</td>
+                <td>${r.fecha}</td>
+                <td>${r.hora_programada}</td>
+                <td>${r.hora_registro}</td>
+                <td><span class="badge ${cls}">${estado}</span></td>
+            </tr>`;
+        }).join('');
+    }
+}
+
+function exportExcel() {
+    const desde = document.getElementById('exp-desde').value;
+    const hasta = document.getElementById('exp-hasta').value;
+    if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
+    let url = `/api/reportes/exportar-excel?desde=${desde}&hasta=${hasta}`;
+    const empId = document.getElementById('exp-empleado').value;
+    if (empId) url += `&empleado_id=${empId}`;
+    window.location.href = url;
+}
+
+setDefaultDates();
+loadEmployeeSelect();
+</script>
+{% endblock %}

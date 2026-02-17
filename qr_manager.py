@@ -8,6 +8,8 @@ import hashlib
 import secrets
 import time
 import io
+import base64
+import os
 import qrcode
 from PIL import Image
 
@@ -19,6 +21,10 @@ QR_ROTATION_INTERVAL = 30
 
 def _get_secret_key():
     return database.get_config("secret_key")
+
+
+def get_base_url():
+    return os.environ.get("BASE_URL", "http://localhost:5000").rstrip("/")
 
 
 def generar_token_qr():
@@ -41,7 +47,6 @@ def validar_token_qr(token):
     secret = _get_secret_key()
     slot_actual = int(time.time()) // QR_ROTATION_INTERVAL
 
-    # Aceptar el slot actual y el anterior (para evitar problemas de timing)
     for slot in [slot_actual, slot_actual - 1]:
         mensaje = f"qr:{slot}".encode()
         firma_esperada = hmac.new(secret.encode(), mensaje, hashlib.sha256).hexdigest()
@@ -78,10 +83,7 @@ def validar_token_dispositivo(token):
 
 
 def generar_token_registro(empleado_id):
-    """
-    Genera un token unico de registro para vincular el dispositivo de un empleado.
-    Este token se incluye en un QR que el empleado escanea una sola vez.
-    """
+    """Genera un token de registro para vincular el dispositivo de un empleado."""
     secret = _get_secret_key()
     aleatorio = secrets.token_hex(16)
     mensaje = f"reg:{empleado_id}:{aleatorio}".encode()
@@ -120,13 +122,22 @@ def generar_qr_image(data, size=10):
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 
-def generar_qr_rotativo_url(server_host, server_port):
+def generar_qr_base64(data, size=8):
+    """Genera un QR como string base64 PNG para embeber en HTML."""
+    img = generar_qr_image(data, size)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return base64.b64encode(buffer.read()).decode("utf-8")
+
+
+def generar_qr_rotativo_url():
     """Genera la URL completa que se codifica en el QR rotativo."""
     token = generar_token_qr()
-    return f"http://{server_host}:{server_port}/checkin?token={token}"
+    return f"{get_base_url()}/checkin?token={token}"
 
 
-def generar_qr_registro_url(server_host, server_port, empleado_id):
+def generar_qr_registro_url(empleado_id):
     """Genera la URL para el QR de registro de dispositivo de un empleado."""
     token = generar_token_registro(empleado_id)
-    return f"http://{server_host}:{server_port}/registro-dispositivo?token={token}"
+    return f"{get_base_url()}/registro-dispositivo?token={token}"

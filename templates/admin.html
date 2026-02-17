@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% set active_page = "admin" %}
+
+{% block title %}NEVOX FARMA - Administracion{% endblock %}
+
+{% block extra_css %}
+.admin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.admin-header h1 { font-size: 22px; color: var(--negro); }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; background: var(--gris-bg); border-bottom: 1px solid var(--gris-border); border-radius: 12px 12px 0 0; }
+.emp-table-wrap { max-height: 400px; overflow-y: auto; }
+.config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 600px; }
+.config-grid .full-width { grid-column: 1 / -1; }
+.separator { height: 1px; background: var(--gris-border); margin: 24px 0; }
+.danger-zone h3 { font-size: 14px; color: var(--rojo); font-weight: 700; margin-bottom: 12px; }
+.danger-btns { display: flex; gap: 8px; }
+.qr-modal-img { display: block; margin: 16px auto; border: 1px solid var(--gris-border); border-radius: 8px; padding: 8px; background: #fff; }
+tr.inactive td { color: var(--gris); }
+@media (max-width: 768px) {
+    .config-grid { grid-template-columns: 1fr; }
+    .toolbar { gap: 4px; }
+    .toolbar .btn { padding: 6px 10px; font-size: 12px; }
+}
+{% endblock %}
+
+{% block content %}
+<div class="admin-header">
+    <h1>Panel de Administracion</h1>
+    <form action="/admin/logout" method="POST" style="margin:0;">
+        <button type="submit" class="btn btn-secondary btn-sm">Cerrar sesion</button>
+    </form>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('empleados')">Empleados</button>
+    <button class="tab-btn" onclick="switchTab('config')">Configuracion</button>
+</div>
+
+<!-- EMPLOYEES TAB -->
+<div id="tab-empleados" class="tab-content active">
+    <div class="card">
+        <div class="toolbar">
+            <button class="btn btn-primary btn-sm" onclick="showNewEmployee()">+ Nuevo Empleado</button>
+            <button class="btn btn-secondary btn-sm" onclick="editSelected()">Editar</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleSelected()">Activar/Desactivar</button>
+            <button class="btn btn-secondary btn-sm" onclick="showQRSelected()">QR Registro</button>
+            <button class="btn btn-secondary btn-sm" onclick="unlinkSelected()">Desvincular</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadEmployees()" style="margin-left:auto;">Actualizar</button>
+        </div>
+        <div class="emp-table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Nombre</th>
+                        <th>Departamento</th>
+                        <th>H. Entrada</th>
+                        <th>H. Salida</th>
+                        <th>Dispositivo</th>
+                        <th>Activo</th>
+                    </tr>
+                </thead>
+                <tbody id="emp-body">
+                    <tr><td colspan="7" style="text-align:center;color:var(--gris);padding:40px;">Cargando...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- CONFIG TAB -->
+<div id="tab-config" class="tab-content">
+    <div class="card">
+        <div class="card-body">
+            <div class="config-grid">
+                <div class="input-group">
+                    <label>Nombre de la empresa</label>
+                    <input type="text" id="cfg-empresa">
+                </div>
+                <div class="input-group">
+                    <label>Tolerancia de retardo (min)</label>
+                    <input type="number" id="cfg-tolerancia" min="0">
+                </div>
+                <div class="full-width separator"></div>
+                <div class="input-group">
+                    <label>Nueva contrasena admin</label>
+                    <input type="password" id="cfg-pass" placeholder="Dejar vacio para no cambiar">
+                </div>
+                <div class="input-group">
+                    <label>Confirmar contrasena</label>
+                    <input type="password" id="cfg-pass-confirm">
+                </div>
+                <div class="full-width">
+                    <button class="btn btn-primary" onclick="saveConfig()">Guardar Configuracion</button>
+                </div>
+            </div>
+
+            <div class="separator"></div>
+
+            <div class="danger-zone">
+                <h3>Limpiar Base de Datos</h3>
+                <div class="danger-btns">
+                    <button class="btn btn-danger btn-sm" onclick="cleanRecords()">Eliminar Registros</button>
+                    <button class="btn btn-danger btn-sm" onclick="cleanAll()">Eliminar Registros y Empleados</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- EMPLOYEE MODAL -->
+<div id="emp-modal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="emp-modal-title">Nuevo Empleado</h3>
+        <input type="hidden" id="emp-edit-id">
+        <div class="input-group">
+            <label>Nombre</label>
+            <input type="text" id="emp-nombre">
+        </div>
+        <div class="input-group">
+            <label>Departamento</label>
+            <input type="text" id="emp-depto">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="input-group">
+                <label>Hora Entrada</label>
+                <input type="time" id="emp-hentrada" value="09:00">
+            </div>
+            <div class="input-group">
+                <label>Hora Salida</label>
+                <input type="time" id="emp-hsalida" value="18:00">
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeModal('emp-modal')">Cancelar</button>
+            <button class="btn btn-primary" onclick="saveEmployee()">Guardar</button>
+        </div>
+    </div>
+</div>
+
+<!-- QR MODAL -->
+<div id="qr-modal" class="modal-overlay">
+    <div class="modal" style="text-align:center;">
+        <h3>QR de Registro</h3>
+        <p id="qr-modal-name" style="font-size:18px;font-weight:700;color:var(--negro);margin-bottom:8px;"></p>
+        <img id="qr-modal-img" class="qr-modal-img" src="" width="280" height="280">
+        <p style="font-size:13px;color:var(--texto-sec);margin-top:12px;">El empleado debe escanear este QR con su celular para vincular su dispositivo.</p>
+        <div class="modal-actions" style="justify-content:center;">
+            <button class="btn btn-secondary" onclick="closeModal('qr-modal')">Cerrar</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let employees = [];
+let selectedId = null;
+
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    event.target.classList.add('active');
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function showAlert(msg) { alert(msg); }
+
+// --- EMPLOYEES ---
+async function loadEmployees() {
+    const resp = await fetch('/api/admin/empleados');
+    const data = await resp.json();
+    employees = data.empleados;
+    selectedId = null;
+    const tbody = document.getElementById('emp-body');
+    if (employees.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--gris);padding:40px;">No hay empleados</td></tr>';
+        return;
+    }
+    tbody.innerHTML = employees.map(e => {
+        const cls = e.activo ? '' : ' class="inactive"';
+        return `<tr${cls} onclick="selectRow(${e.id})" id="row-${e.id}" style="cursor:pointer;">
+            <td>${e.id}</td>
+            <td>${e.nombre}</td>
+            <td>${e.departamento}</td>
+            <td>${e.hora_entrada}</td>
+            <td>${e.hora_salida}</td>
+            <td>${e.token_dispositivo ? '<span class="badge badge-active">Vinculado</span>' : '\u2014'}</td>
+            <td>${e.activo ? '<span class="badge badge-active">Si</span>' : '<span class="badge badge-inactive">No</span>'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function selectRow(id) {
+    document.querySelectorAll('#emp-body tr').forEach(r => r.style.background = '');
+    const row = document.getElementById('row-' + id);
+    if (row) row.style.background = 'var(--naranja-light)';
+    selectedId = id;
+}
+
+function getSelected() {
+    if (!selectedId) { showAlert('Selecciona un empleado.'); return null; }
+    return employees.find(e => e.id === selectedId);
+}
+
+function showNewEmployee() {
+    document.getElementById('emp-modal-title').textContent = 'Nuevo Empleado';
+    document.getElementById('emp-edit-id').value = '';
+    document.getElementById('emp-nombre').value = '';
+    document.getElementById('emp-depto').value = '';
+    document.getElementById('emp-hentrada').value = '09:00';
+    document.getElementById('emp-hsalida').value = '18:00';
+    document.getElementById('emp-modal').classList.add('show');
+}
+
+function editSelected() {
+    const emp = getSelected();
+    if (!emp) return;
+    document.getElementById('emp-modal-title').textContent = 'Editar Empleado';
+    document.getElementById('emp-edit-id').value = emp.id;
+    document.getElementById('emp-nombre').value = emp.nombre;
+    document.getElementById('emp-depto').value = emp.departamento;
+    document.getElementById('emp-hentrada').value = emp.hora_entrada;
+    document.getElementById('emp-hsalida').value = emp.hora_salida;
+    document.getElementById('emp-modal').classList.add('show');
+}
+
+async function saveEmployee() {
+    const id = document.getElementById('emp-edit-id').value;
+    const body = {
+        nombre: document.getElementById('emp-nombre').value,
+        departamento: document.getElementById('emp-depto').value,
+        hora_entrada: document.getElementById('emp-hentrada').value,
+        hora_salida: document.getElementById('emp-hsalida').value,
+    };
+    const url = id ? `/api/admin/empleados/${id}` : '/api/admin/empleados';
+    const method = id ? 'PUT' : 'POST';
+    const resp = await fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data = await resp.json();
+    if (data.ok) {
+        closeModal('emp-modal');
+        loadEmployees();
+    } else {
+        showAlert(data.mensaje);
+    }
+}
+
+async function toggleSelected() {
+    const emp = getSelected();
+    if (!emp) return;
+    const accion = emp.activo ? 'desactivar' : 'activar';
+    if (!confirm(`Deseas ${accion} a ${emp.nombre}?`)) return;
+    await fetch(`/api/admin/empleados/${emp.id}/toggle`, {method:'POST'});
+    loadEmployees();
+}
+
+async function showQRSelected() {
+    const emp = getSelected();
+    if (!emp) return;
+    const resp = await fetch(`/api/admin/empleados/${emp.id}/qr-registro`);
+    const data = await resp.json();
+    if (data.ok) {
+        document.getElementById('qr-modal-name').textContent = data.nombre;
+        document.getElementById('qr-modal-img').src = 'data:image/png;base64,' + data.qr_base64;
+        document.getElementById('qr-modal').classList.add('show');
+    }
+}
+
+async function unlinkSelected() {
+    const emp = getSelected();
+    if (!emp) return;
+    if (!emp.token_dispositivo) { showAlert('Este empleado no tiene dispositivo vinculado.'); return; }
+    if (!confirm(`Desvincular dispositivo de ${emp.nombre}?`)) return;
+    await fetch(`/api/admin/empleados/${emp.id}/desvincular`, {method:'POST'});
+    loadEmployees();
+}
+
+// --- CONFIG ---
+async function loadConfig() {
+    const resp = await fetch('/api/admin/config');
+    const data = await resp.json();
+    document.getElementById('cfg-empresa').value = data.nombre_empresa;
+    document.getElementById('cfg-tolerancia').value = data.tolerancia_minutos;
+}
+
+async function saveConfig() {
+    const body = {
+        nombre_empresa: document.getElementById('cfg-empresa').value,
+        tolerancia_minutos: document.getElementById('cfg-tolerancia').value,
+    };
+    const pass = document.getElementById('cfg-pass').value;
+    if (pass) {
+        body.nuevo_password = pass;
+        body.confirmar_password = document.getElementById('cfg-pass-confirm').value;
+    }
+    const resp = await fetch('/api/admin/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data = await resp.json();
+    showAlert(data.mensaje);
+    if (data.ok) {
+        document.getElementById('cfg-pass').value = '';
+        document.getElementById('cfg-pass-confirm').value = '';
+    }
+}
+
+async function cleanRecords() {
+    if (!confirm('Se eliminaran TODOS los registros de entradas y salidas.\n\nLos empleados se mantendran.\n\nEsta accion no se puede deshacer. Continuar?')) return;
+    const resp = await fetch('/api/admin/limpiar-registros', {method:'POST'});
+    const data = await resp.json();
+    showAlert(data.mensaje);
+}
+
+async function cleanAll() {
+    if (!confirm('Se eliminaran TODOS los registros y TODOS los empleados.\n\nSolo se mantendra la configuracion.\n\nEsta accion no se puede deshacer. Continuar?')) return;
+    const resp = await fetch('/api/admin/limpiar-todo', {method:'POST'});
+    const data = await resp.json();
+    showAlert(data.mensaje);
+    loadEmployees();
+}
+
+loadEmployees();
+loadConfig();
+</script>
+{% endblock %}

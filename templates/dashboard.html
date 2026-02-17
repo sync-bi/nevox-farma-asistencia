@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block title %}NEVOX FARMA - Dashboard{% endblock %}
+
+{% block extra_css %}
+.dashboard { display: grid; grid-template-columns: 360px 1fr; gap: 24px; }
+.qr-section { display: flex; flex-direction: column; gap: 16px; }
+.qr-card { text-align: center; }
+.qr-card .card-body { padding: 24px; }
+.qr-image { border: 1px solid var(--gris-border); border-radius: 8px; padding: 8px; background: #fff; display: inline-block; }
+.qr-image img { width: 260px; height: 260px; display: block; }
+.qr-status { font-size: 12px; color: var(--gris); margin-top: 12px; }
+.last-event { padding: 14px 18px; border-radius: 10px; background: var(--gris-bg); border: 1px solid var(--gris-border); }
+.last-event-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--gris); text-transform: uppercase; margin-bottom: 4px; }
+.last-event-text { font-size: 15px; font-weight: 700; color: var(--texto-sec); }
+.last-event.entrada { background: var(--verde-light); border-color: var(--verde-border); }
+.last-event.entrada .last-event-title { color: var(--verde); }
+.last-event.entrada .last-event-text { color: var(--verde); }
+.last-event.salida { background: var(--salida-light); border-color: var(--salida-border); }
+.last-event.salida .last-event-title { color: var(--salida); }
+.last-event.salida .last-event-text { color: var(--salida); }
+.records-section .card-header { display: flex; align-items: center; justify-content: space-between; }
+.records-date { font-size: 14px; font-weight: 400; color: var(--gris); }
+.records-table { max-height: 500px; overflow-y: auto; }
+@media (max-width: 900px) {
+    .dashboard { grid-template-columns: 1fr; }
+    .qr-image img { width: 200px; height: 200px; }
+}
+{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="qr-section">
+        <div class="card qr-card">
+            <div class="card-body">
+                <div class="qr-image">
+                    <img id="qr-image" src="" alt="QR Code">
+                </div>
+                <div class="qr-status">
+                    <span id="qr-countdown">Cargando...</span> &bull; <span id="qr-time"></span>
+                </div>
+            </div>
+        </div>
+
+        <div id="last-event" class="last-event">
+            <div class="last-event-title">ULTIMO REGISTRO</div>
+            <div id="last-event-text" class="last-event-text">Esperando registros...</div>
+        </div>
+    </div>
+
+    <div class="records-section">
+        <div class="card">
+            <div class="card-header">
+                Registros del dia
+                <span id="records-date" class="records-date"></span>
+            </div>
+            <div class="records-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Hora</th>
+                            <th>Empleado</th>
+                            <th>Tipo</th>
+                            <th>Departamento</th>
+                        </tr>
+                    </thead>
+                    <tbody id="records-body">
+                        <tr><td colspan="4" style="text-align:center;color:var(--gris);padding:40px;">Cargando...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="counter-bar">
+                <div>Total: <span id="count-total">0</span></div>
+                <div>Entradas: <span id="count-entradas">0</span></div>
+                <div>Salidas: <span id="count-salidas">0</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshQR() {
+    try {
+        const resp = await fetch('/api/qr');
+        const data = await resp.json();
+        document.getElementById('qr-image').src = 'data:image/png;base64,' + data.qr_base64;
+        document.getElementById('qr-countdown').textContent = 'Actualiza en ' + data.remaining_seconds + 's';
+        document.getElementById('qr-time').textContent = data.timestamp;
+    } catch(e) {
+        document.getElementById('qr-countdown').textContent = 'Error al cargar QR';
+    }
+}
+
+async function refreshRecords() {
+    try {
+        const resp = await fetch('/api/registros-hoy');
+        const data = await resp.json();
+        document.getElementById('records-date').textContent = data.fecha;
+        document.getElementById('count-total').textContent = data.total;
+        document.getElementById('count-entradas').textContent = data.entradas;
+        document.getElementById('count-salidas').textContent = data.salidas;
+
+        const tbody = document.getElementById('records-body');
+        if (data.registros.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--gris);padding:40px;">Sin registros hoy</td></tr>';
+        } else {
+            tbody.innerHTML = data.registros.map(r => {
+                const dt = new Date(r.fecha_hora);
+                const hora = dt.toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                const badgeClass = r.tipo === 'entrada' ? 'badge-entrada' : 'badge-salida';
+                return `<tr>
+                    <td>${hora}</td>
+                    <td>${r.nombre}</td>
+                    <td><span class="badge ${badgeClass}">${r.tipo.toUpperCase()}</span></td>
+                    <td>${r.departamento}</td>
+                </tr>`;
+            }).join('');
+
+            const last = data.registros[0];
+            const lastDt = new Date(last.fecha_hora);
+            const lastHora = lastDt.toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+            const el = document.getElementById('last-event');
+            el.className = 'last-event ' + last.tipo;
+            document.getElementById('last-event-text').textContent =
+                last.tipo.toUpperCase() + '  \u2022  ' + last.nombre + '  \u2022  ' + lastHora;
+        }
+    } catch(e) {}
+}
+
+refreshQR();
+refreshRecords();
+setInterval(refreshQR, 5000);
+setInterval(refreshRecords, 10000);
+</script>
+{% endblock %}
