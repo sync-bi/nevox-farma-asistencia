@@ -1,10 +1,11 @@
 """
 NEVOX FARMA - Sistema de Control de Asistencia
-Aplicacion Flask para Vercel con Supabase (REST API directo).
-Archivo unico: database + QR + rutas.
+Aplicacion Flask para Vercel con Supabase (REST API).
 """
 
 import os
+import sys
+import json
 import hashlib
 import hmac
 import secrets
@@ -12,11 +13,12 @@ import time
 import io
 import base64
 import traceback
+import urllib.request
+import urllib.parse
 from io import BytesIO
 from functools import wraps
 from datetime import datetime, date, timedelta
 
-import requests as _http
 from flask import (
     Flask, request, render_template, jsonify, session,
     redirect, url_for, send_file,
@@ -32,6 +34,10 @@ BASE_URL = os.environ.get("BASE_URL", "http://localhost:5000").rstrip("/")
 QR_ROTATION_INTERVAL = 30
 
 
+# ============================================================
+# SUPABASE REST HELPERS (using only stdlib)
+# ============================================================
+
 def _sb_headers(prefer=None):
     h = {
         "apikey": SUPABASE_KEY,
@@ -43,6 +49,19 @@ def _sb_headers(prefer=None):
     return h
 
 
+def _sb_request(method, path, data=None, params=None, prefer=None):
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    if params:
+        qs = urllib.parse.urlencode(params, doseq=True)
+        url = f"{url}?{qs}"
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    headers = _sb_headers(prefer)
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(req) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw.strip() else []
+
+
 def _sb_get(table, select="*", filters=None, order=None, limit=None):
     params = [("select", select)]
     if filters:
@@ -51,50 +70,29 @@ def _sb_get(table, select="*", filters=None, order=None, limit=None):
         params.append(("order", order))
     if limit:
         params.append(("limit", str(limit)))
-    r = _http.get(f"{SUPABASE_URL}/rest/v1/{table}", params=params, headers=_sb_headers())
-    r.raise_for_status()
-    return r.json()
+    return _sb_request("GET", table, params=params)
 
 
 def _sb_post(table, data, prefer="return=representation"):
-    r = _http.post(f"{SUPABASE_URL}/rest/v1/{table}", json=data, headers=_sb_headers(prefer))
-    r.raise_for_status()
-    return r.json() if prefer and "return" in prefer else None
+    return _sb_request("POST", table, data=data, prefer=prefer)
 
 
 def _sb_upsert(table, data):
-    r = _http.post(
-        f"{SUPABASE_URL}/rest/v1/{table}", json=data,
-        headers=_sb_headers("resolution=merge-duplicates,return=representation"),
-    )
-    r.raise_for_status()
-    return r.json()
+    return _sb_request("POST", table, data=data,
+                       prefer="resolution=merge-duplicates,return=representation")
 
 
 def _sb_patch(table, data, filters):
-    r = _http.patch(
-        f"{SUPABASE_URL}/rest/v1/{table}", json=data,
-        params=filters, headers=_sb_headers("return=representation"),
-    )
-    r.raise_for_status()
-    return r.json()
+    return _sb_request("PATCH", table, data=data, params=filters,
+                       prefer="return=representation")
 
 
 def _sb_delete(table, filters):
-    r = _http.delete(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        params=filters, headers=_sb_headers(),
-    )
-    r.raise_for_status()
+    return _sb_request("DELETE", table, params=filters)
 
 
 def _sb_rpc(fn_name, data):
-    r = _http.post(
-        f"{SUPABASE_URL}/rest/v1/rpc/{fn_name}", json=data,
-        headers=_sb_headers(),
-    )
-    r.raise_for_status()
-    return r.json()
+    return _sb_request("POST", f"rpc/{fn_name}", data=data)
 
 
 # ============================================================
@@ -377,26 +375,14 @@ def handle_error(e):
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.now().isoformat()})
-
-
-def _get_client_ip():
-    """Obtiene la IP real del cliente (compatible con Vercel/proxies)."""
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.headers.get("X-Real-Ip", request.remote_addr or "")
-
-
-def _check_ip_allowed():
-    """Verifica si la IP del cliente esta permitida. Retorna (ok, mensaje)."""
-    ip_permitida = db_get_config("ip_permitida")
-    if not ip_permitida:
-        return True, ""
-    client_ip = _get_client_ip()
-    if client_ip == ip_permitida:
-        return True, ""
-    return False, "Debes estar conectado a la red WiFi de la empresa para registrar asistencia."
+    return jsonify({
+        "status": "ok",
+        "python": sys.version,
+        "supabase_url_set": bool(SUPABASE_URL),
+        "supabase_key_set": bool(SUPABASE_KEY),
+        "template_dir": TEMPLATE_DIR,
+        "template_dir_exists": os.path.isdir(TEMPLATE_DIR),
+    })
 
 
 def admin_required(f):
@@ -443,9 +429,6 @@ def checkin():
 
 @app.route("/api/checkin", methods=["POST"])
 def api_checkin():
-    ip_ok, ip_msg = _check_ip_allowed()
-    if not ip_ok:
-        return jsonify({"ok": False, "mensaje": ip_msg}), 403
     data = request.get_json()
     if not data:
         return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
@@ -589,18 +572,12 @@ def api_admin_desvincular(eid):
     return jsonify({"ok": True})
 
 
-@app.route("/api/mi-ip")
-def api_mi_ip():
-    return jsonify({"ip": _get_client_ip()})
-
-
 @app.route("/api/admin/config", methods=["GET"])
 @admin_required
 def api_admin_get_config():
     return jsonify({
         "nombre_empresa": db_get_config("nombre_empresa") or "NEVOX FARMA",
         "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15",
-        "ip_permitida": db_get_config("ip_permitida") or "",
     })
 
 
@@ -612,12 +589,6 @@ def api_admin_save_config():
         return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
     if "nombre_empresa" in data:
         db_set_config("nombre_empresa", data["nombre_empresa"])
-    if "ip_permitida" in data:
-        ip = data["ip_permitida"].strip()
-        if ip:
-            db_set_config("ip_permitida", ip)
-        else:
-            db_set_config("ip_permitida", "")
     if "tolerancia_minutos" in data:
         try:
             t = int(data["tolerancia_minutos"])

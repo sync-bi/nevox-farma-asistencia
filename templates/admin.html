@@ -82,19 +82,6 @@ tr.inactive td { color: var(--gris); }
                 </div>
                 <div class="full-width separator"></div>
                 <div class="input-group">
-                    <label>IP permitida para check-in (red WiFi)</label>
-                    <div style="display:flex;gap:8px;align-items:center;">
-                        <input type="text" id="cfg-ip" placeholder="Ej: 187.190.xx.xx" style="flex:1;">
-                        <button class="btn btn-secondary btn-sm" onclick="detectIP()" type="button">Usar mi IP actual</button>
-                    </div>
-                    <small style="color:var(--texto-sec);margin-top:4px;display:block;">Dejar vacio para permitir check-in desde cualquier red. Solo los dispositivos en esta IP podran registrar asistencia.</small>
-                </div>
-                <div class="input-group">
-                    <label>Tu IP actual</label>
-                    <span id="cfg-ip-actual" style="font-weight:600;color:var(--naranja);">Detectando...</span>
-                </div>
-                <div class="full-width separator"></div>
-                <div class="input-group">
                     <label>Nueva contrasena admin</label>
                     <input type="password" id="cfg-pass" placeholder="Dejar vacio para no cambiar">
                 </div>
@@ -295,32 +282,12 @@ async function loadConfig() {
     const data = await resp.json();
     document.getElementById('cfg-empresa').value = data.nombre_empresa;
     document.getElementById('cfg-tolerancia').value = data.tolerancia_minutos;
-    document.getElementById('cfg-ip').value = data.ip_permitida || '';
-    detectCurrentIP();
-}
-
-async function detectCurrentIP() {
-    try {
-        const resp = await fetch('/api/mi-ip');
-        const data = await resp.json();
-        document.getElementById('cfg-ip-actual').textContent = data.ip;
-    } catch(e) {
-        document.getElementById('cfg-ip-actual').textContent = 'No detectada';
-    }
-}
-
-function detectIP() {
-    const ip = document.getElementById('cfg-ip-actual').textContent;
-    if (ip && ip !== 'Detectando...' && ip !== 'No detectada') {
-        document.getElementById('cfg-ip').value = ip;
-    }
 }
 
 async function saveConfig() {
     const body = {
         nombre_empresa: document.getElementById('cfg-empresa').value,
         tolerancia_minutos: document.getElementById('cfg-tolerancia').value,
-        ip_permitida: document.getElementById('cfg-ip').value,
     };
     const pass = document.getElementById('cfg-pass').value;
     if (pass) {
