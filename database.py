@@ -275,6 +275,25 @@ def calcular_horas_trabajadas(empleado_id, fecha_inicio, fecha_fin):
     return round(horas, 2)
 
 
+def limpiar_registros():
+    """Elimina todos los registros de asistencia."""
+    conn = get_connection()
+    conn.execute("DELETE FROM registros")
+    conn.execute("DELETE FROM sqlite_sequence WHERE name = 'registros'")
+    conn.commit()
+    conn.close()
+
+
+def limpiar_registros_y_empleados():
+    """Elimina todos los registros de asistencia y todos los empleados."""
+    conn = get_connection()
+    conn.execute("DELETE FROM registros")
+    conn.execute("DELETE FROM empleados")
+    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('registros', 'empleados')")
+    conn.commit()
+    conn.close()
+
+
 def obtener_retardos(fecha_inicio, fecha_fin):
     conn = get_connection()
     empleados = listar_empleados()

@@ -269,6 +269,43 @@ class AdminPanel(tk.Toplevel):
         tk.Label(info_frame, text="Los celulares deben estar en la misma red WiFi.",
                   bg=GRIS_BG, fg=NARANJA, font=("Segoe UI", 10)).pack(anchor="w", pady=(8, 0))
 
+        # --- Seccion Limpiar Base de Datos ---
+        tk.Frame(frame, bg=GRIS_BORDER, height=1).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(20, 8))
+
+        tk.Label(frame, text="Limpiar Base de Datos", bg=BLANCO, fg="#dc2626",
+                  font=("Segoe UI", 12, "bold")).grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 8))
+
+        btn_limpiar_frame = tk.Frame(frame, bg=BLANCO)
+        btn_limpiar_frame.grid(row=9, column=0, columnspan=2, sticky="w")
+
+        ttk.Button(btn_limpiar_frame, text="Eliminar Registros",
+                    command=self._limpiar_registros,
+                    style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_limpiar_frame, text="Eliminar Registros y Empleados",
+                    command=self._limpiar_registros_y_empleados,
+                    style="Secondary.TButton").pack(side=tk.LEFT)
+
+    def _limpiar_registros(self):
+        if not messagebox.askyesno("Confirmar",
+                "Se eliminaran TODOS los registros de entradas y salidas.\n\n"
+                "Los empleados se mantendran.\n\n"
+                "Esta accion no se puede deshacer. Continuar?",
+                parent=self):
+            return
+        database.limpiar_registros()
+        messagebox.showinfo("Exito", "Todos los registros fueron eliminados.", parent=self)
+
+    def _limpiar_registros_y_empleados(self):
+        if not messagebox.askyesno("Confirmar",
+                "Se eliminaran TODOS los registros y TODOS los empleados.\n\n"
+                "Solo se mantendra la configuracion del sistema.\n\n"
+                "Esta accion no se puede deshacer. Continuar?",
+                parent=self):
+            return
+        database.limpiar_registros_y_empleados()
+        self._cargar_empleados()
+        messagebox.showinfo("Exito", "Registros y empleados fueron eliminados.", parent=self)
+
     def _guardar_config(self):
         database.set_config("nombre_empresa", self.var_empresa.get())
 
