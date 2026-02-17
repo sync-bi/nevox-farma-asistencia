@@ -262,7 +262,7 @@ async function showQRSelected() {
     const data = await resp.json();
     if (data.ok) {
         document.getElementById('qr-modal-name').textContent = data.nombre;
-        document.getElementById('qr-modal-img').src = 'data:image/svg+xml;base64,' + data.qr_base64;
+        document.getElementById('qr-modal-img').src = 'data:image/png;base64,' + data.qr_base64;
         document.getElementById('qr-modal').classList.add('show');
     }
 }

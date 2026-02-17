@@ -1,11 +1,10 @@
 """
 NEVOX FARMA - Sistema de Control de Asistencia
-Aplicacion Flask para Vercel con Supabase (REST API).
+Aplicacion Flask para Vercel con Supabase (REST API directo).
+Archivo unico: database + QR + rutas.
 """
 
 import os
-import sys
-import json
 import hashlib
 import hmac
 import secrets
@@ -13,16 +12,17 @@ import time
 import io
 import base64
 import traceback
-import urllib.request
-import urllib.parse
 from io import BytesIO
 from functools import wraps
 from datetime import datetime, date, timedelta
 
+import requests as _http
 from flask import (
     Flask, request, render_template, jsonify, session,
     redirect, url_for, send_file,
 )
+import qrcode
+from PIL import Image
 
 # ============================================================
 # CONFIG
@@ -33,10 +33,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:5000").rstrip("/")
 QR_ROTATION_INTERVAL = 30
 
-
-# ============================================================
-# SUPABASE REST HELPERS (using only stdlib)
-# ============================================================
 
 def _sb_headers(prefer=None):
     h = {
@@ -49,19 +45,6 @@ def _sb_headers(prefer=None):
     return h
 
 
-def _sb_request(method, path, data=None, params=None, prefer=None):
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    if params:
-        qs = urllib.parse.urlencode(params, doseq=True)
-        url = f"{url}?{qs}"
-    body = json.dumps(data).encode("utf-8") if data is not None else None
-    headers = _sb_headers(prefer)
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(req) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw.strip() else []
-
-
 def _sb_get(table, select="*", filters=None, order=None, limit=None):
     params = [("select", select)]
     if filters:
@@ -70,29 +53,50 @@ def _sb_get(table, select="*", filters=None, order=None, limit=None):
         params.append(("order", order))
     if limit:
         params.append(("limit", str(limit)))
-    return _sb_request("GET", table, params=params)
+    r = _http.get(f"{SUPABASE_URL}/rest/v1/{table}", params=params, headers=_sb_headers())
+    r.raise_for_status()
+    return r.json()
 
 
 def _sb_post(table, data, prefer="return=representation"):
-    return _sb_request("POST", table, data=data, prefer=prefer)
+    r = _http.post(f"{SUPABASE_URL}/rest/v1/{table}", json=data, headers=_sb_headers(prefer))
+    r.raise_for_status()
+    return r.json() if prefer and "return" in prefer else None
 
 
 def _sb_upsert(table, data):
-    return _sb_request("POST", table, data=data,
-                       prefer="resolution=merge-duplicates,return=representation")
+    r = _http.post(
+        f"{SUPABASE_URL}/rest/v1/{table}", json=data,
+        headers=_sb_headers("resolution=merge-duplicates,return=representation"),
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 def _sb_patch(table, data, filters):
-    return _sb_request("PATCH", table, data=data, params=filters,
-                       prefer="return=representation")
+    r = _http.patch(
+        f"{SUPABASE_URL}/rest/v1/{table}", json=data,
+        params=filters, headers=_sb_headers("return=representation"),
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 def _sb_delete(table, filters):
-    return _sb_request("DELETE", table, params=filters)
+    r = _http.delete(
+        f"{SUPABASE_URL}/rest/v1/{table}",
+        params=filters, headers=_sb_headers(),
+    )
+    r.raise_for_status()
 
 
 def _sb_rpc(fn_name, data):
-    return _sb_request("POST", f"rpc/{fn_name}", data=data)
+    r = _http.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/{fn_name}", json=data,
+        headers=_sb_headers(),
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 # ============================================================
@@ -338,14 +342,12 @@ def reg_validar(token):
 
 
 def qr_base64(data, size=8):
-    import qrcode
-    import qrcode.image.svg
     qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=size, border=2)
     qr.add_data(data)
     qr.make(fit=True)
-    img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     buf = io.BytesIO()
-    img.save(buf)
+    img.save(buf, format="PNG")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
@@ -375,14 +377,7 @@ def handle_error(e):
 
 @app.route("/api/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "python": sys.version,
-        "supabase_url_set": bool(SUPABASE_URL),
-        "supabase_key_set": bool(SUPABASE_KEY),
-        "template_dir": TEMPLATE_DIR,
-        "template_dir_exists": os.path.isdir(TEMPLATE_DIR),
-    })
+    return jsonify({"status": "ok", "time": datetime.now().isoformat()})
 
 
 def admin_required(f):
