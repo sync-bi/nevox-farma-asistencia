@@ -13,7 +13,7 @@ import os
 import qrcode
 from PIL import Image
 
-import database
+from api import database
 
 # Intervalo de rotacion del QR en segundos
 QR_ROTATION_INTERVAL = 30

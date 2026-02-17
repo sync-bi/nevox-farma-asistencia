@@ -6,12 +6,6 @@ Maneja dashboard, admin, reportes, check-in y registro de dispositivos.
 import os
 import sys
 import traceback
-
-# Agregar directorio raiz al path para importar modulos
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
 import time
 from io import BytesIO
 from functools import wraps
@@ -22,12 +16,14 @@ from flask import (
     redirect, url_for, send_file,
 )
 
-import database
-import qr_manager
+# Import local modules from same directory
+from api import database, qr_manager
+
+TEMPLATE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "templates"))
 
 app = Flask(
     __name__,
-    template_folder=os.path.join(ROOT_DIR, "templates"),
+    template_folder=TEMPLATE_DIR,
 )
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-change-me")
 
