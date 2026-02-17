@@ -1,43 +1,299 @@
 """
-Aplicacion Flask principal para Vercel.
-Maneja dashboard, admin, reportes, check-in y registro de dispositivos.
+NEVOX FARMA - Sistema de Control de Asistencia
+Aplicacion Flask para Vercel con Supabase.
+Archivo unico con toda la logica (database, QR, rutas).
 """
 
 import os
-import sys
-import traceback
+import hashlib
+import hmac
+import secrets
 import time
+import io
+import base64
+import traceback
 from io import BytesIO
 from functools import wraps
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from flask import (
     Flask, request, render_template, jsonify, session,
     redirect, url_for, send_file,
 )
+from supabase import create_client
+import qrcode
+from PIL import Image
 
-# Import local modules from same directory
-from api import database, qr_manager
+# ============================================================
+# CONFIG
+# ============================================================
 
-TEMPLATE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "templates"))
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:5000").rstrip("/")
+QR_ROTATION_INTERVAL = 30
 
-app = Flask(
-    __name__,
-    template_folder=TEMPLATE_DIR,
-)
+_sb_client = None
+
+def _get_sb():
+    global _sb_client
+    if _sb_client is None:
+        _sb_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _sb_client
+
+# ============================================================
+# DATABASE FUNCTIONS
+# ============================================================
+
+def db_get_config(clave):
+    sb = _get_sb()
+    result = sb.table("configuracion").select("valor").eq("clave", clave).execute()
+    if result.data:
+        return result.data[0]["valor"]
+    return None
+
+def db_set_config(clave, valor):
+    sb = _get_sb()
+    sb.table("configuracion").upsert({"clave": clave, "valor": valor}).execute()
+
+def db_verificar_password(password):
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    return hashed == db_get_config("admin_password")
+
+def db_cambiar_password(nuevo):
+    hashed = hashlib.sha256(nuevo.encode()).hexdigest()
+    db_set_config("admin_password", hashed)
+
+def db_crear_empleado(nombre, departamento="", hora_entrada="09:00", hora_salida="18:00"):
+    sb = _get_sb()
+    result = sb.table("empleados").insert({
+        "nombre": nombre, "departamento": departamento,
+        "hora_entrada": hora_entrada, "hora_salida": hora_salida,
+    }).execute()
+    return result.data[0]["id"]
+
+def _fix_activo(row):
+    row["activo"] = 1 if row.get("activo") else 0
+    return row
+
+def db_obtener_empleado(empleado_id):
+    sb = _get_sb()
+    result = sb.table("empleados").select("*").eq("id", empleado_id).execute()
+    return _fix_activo(result.data[0]) if result.data else None
+
+def db_obtener_empleado_por_token(token):
+    sb = _get_sb()
+    result = sb.table("empleados").select("*").eq("token_dispositivo", token).eq("activo", True).execute()
+    return _fix_activo(result.data[0]) if result.data else None
+
+def db_listar_empleados(solo_activos=True):
+    sb = _get_sb()
+    q = sb.table("empleados").select("*")
+    if solo_activos:
+        q = q.eq("activo", True)
+    result = q.order("nombre").execute()
+    return [_fix_activo(r) for r in result.data]
+
+def db_actualizar_empleado(emp_id, **kwargs):
+    campos = {}
+    for k in ["nombre", "departamento", "hora_entrada", "hora_salida"]:
+        if k in kwargs and kwargs[k] is not None:
+            campos[k] = kwargs[k]
+    if "activo" in kwargs and kwargs["activo"] is not None:
+        campos["activo"] = bool(kwargs["activo"])
+    if campos:
+        sb = _get_sb()
+        sb.table("empleados").update(campos).eq("id", emp_id).execute()
+
+def db_vincular(emp_id, token):
+    sb = _get_sb()
+    sb.table("empleados").update({"token_dispositivo": token}).eq("id", emp_id).execute()
+
+def db_desvincular(emp_id):
+    sb = _get_sb()
+    sb.table("empleados").update({"token_dispositivo": None}).eq("id", emp_id).execute()
+
+def db_registrar_asistencia(emp_id, tipo, token_usado=None):
+    sb = _get_sb()
+    sb.table("registros").insert({"empleado_id": emp_id, "tipo": tipo, "token_usado": token_usado}).execute()
+
+def db_ultimo_registro(emp_id, fecha=None):
+    if not fecha:
+        fecha = date.today().isoformat()
+    sb = _get_sb()
+    result = sb.table("registros").select("*").eq("empleado_id", emp_id) \
+        .gte("fecha_hora", f"{fecha}T00:00:00").lte("fecha_hora", f"{fecha}T23:59:59") \
+        .order("fecha_hora", desc=True).limit(1).execute()
+    return result.data[0] if result.data else None
+
+def db_siguiente_tipo(emp_id):
+    ultimo = db_ultimo_registro(emp_id)
+    return "entrada" if (ultimo is None or ultimo["tipo"] == "salida") else "salida"
+
+def _flatten_registros(data):
+    registros = []
+    for r in data:
+        emp = r.pop("empleados", {}) or {}
+        r["nombre"] = emp.get("nombre", "")
+        r["departamento"] = emp.get("departamento", "")
+        registros.append(r)
+    return registros
+
+def db_registros_dia(fecha=None):
+    if not fecha:
+        fecha = date.today().isoformat()
+    sb = _get_sb()
+    result = sb.table("registros").select("*, empleados(nombre, departamento)") \
+        .gte("fecha_hora", f"{fecha}T00:00:00").lte("fecha_hora", f"{fecha}T23:59:59") \
+        .order("fecha_hora", desc=True).execute()
+    return _flatten_registros(result.data)
+
+def db_registros_rango(desde, hasta, emp_id=None):
+    sb = _get_sb()
+    q = sb.table("registros").select("*, empleados(nombre, departamento)") \
+        .gte("fecha_hora", f"{desde}T00:00:00").lte("fecha_hora", f"{hasta}T23:59:59")
+    if emp_id:
+        q = q.eq("empleado_id", emp_id)
+    result = q.order("fecha_hora").execute()
+    return _flatten_registros(result.data)
+
+def db_horas_trabajadas(emp_id, desde, hasta):
+    registros = db_registros_rango(desde, hasta, emp_id)
+    total = 0
+    entrada = None
+    for r in registros:
+        dt = datetime.fromisoformat(r["fecha_hora"])
+        if r["tipo"] == "entrada":
+            entrada = dt
+        elif r["tipo"] == "salida" and entrada:
+            total += (dt - entrada).total_seconds()
+            entrada = None
+    return round(total / 3600, 2)
+
+def db_retardos(desde, hasta):
+    sb = _get_sb()
+    empleados = db_listar_empleados()
+    try:
+        result = sb.rpc("obtener_primera_entrada_por_dia", {"p_fecha_inicio": desde, "p_fecha_fin": hasta}).execute()
+        entradas = result.data or []
+    except Exception:
+        entradas = []
+    emp_map = {e["id"]: e for e in empleados}
+    retardos = []
+    for entry in entradas:
+        emp = emp_map.get(entry["empleado_id"])
+        if not emp:
+            continue
+        hora_limite = emp["hora_entrada"]
+        hora_reg = entry["primera_hora"]
+        if hora_reg > hora_limite:
+            tol = int(db_get_config("tolerancia_minutos") or "15")
+            h, m = map(int, hora_limite.split(":"))
+            lim = (datetime.combine(date.today(), datetime.min.time().replace(hour=h, minute=m)) + timedelta(minutes=tol)).strftime("%H:%M")
+            retardos.append({
+                "empleado_id": emp["id"], "nombre": emp["nombre"],
+                "departamento": emp["departamento"], "fecha": entry["fecha"],
+                "hora_programada": hora_limite, "hora_registro": hora_reg,
+                "con_tolerancia": hora_reg <= lim,
+            })
+    return retardos
+
+def db_limpiar_registros():
+    sb = _get_sb()
+    sb.table("registros").delete().neq("id", 0).execute()
+
+def db_limpiar_todo():
+    sb = _get_sb()
+    sb.table("registros").delete().neq("id", 0).execute()
+    sb.table("empleados").delete().neq("id", 0).execute()
+
+# ============================================================
+# QR / TOKEN FUNCTIONS
+# ============================================================
+
+def _secret():
+    return db_get_config("secret_key")
+
+def qr_token():
+    secret = _secret()
+    slot = int(time.time()) // QR_ROTATION_INTERVAL
+    firma = hmac.new(secret.encode(), f"qr:{slot}".encode(), hashlib.sha256).hexdigest()
+    return f"{slot}:{firma}"
+
+def qr_validar(token):
+    try:
+        slot_str, firma = token.split(":")
+        slot_r = int(slot_str)
+    except (ValueError, AttributeError):
+        return False
+    secret = _secret()
+    slot_now = int(time.time()) // QR_ROTATION_INTERVAL
+    for s in [slot_now, slot_now - 1]:
+        expected = hmac.new(secret.encode(), f"qr:{s}".encode(), hashlib.sha256).hexdigest()
+        if s == slot_r and hmac.compare_digest(firma, expected):
+            return True
+    return False
+
+def device_token(emp_id):
+    secret = _secret()
+    rand = secrets.token_hex(16)
+    firma = hmac.new(secret.encode(), f"device:{emp_id}:{rand}".encode(), hashlib.sha256).hexdigest()
+    return f"dev:{emp_id}:{rand}:{firma}"
+
+def device_validar(token):
+    try:
+        prefix, emp_id, rand, firma = token.split(":")
+        if prefix != "dev": return None
+    except (ValueError, AttributeError):
+        return None
+    secret = _secret()
+    expected = hmac.new(secret.encode(), f"device:{emp_id}:{rand}".encode(), hashlib.sha256).hexdigest()
+    return int(emp_id) if hmac.compare_digest(firma, expected) else None
+
+def reg_token(emp_id):
+    secret = _secret()
+    rand = secrets.token_hex(16)
+    firma = hmac.new(secret.encode(), f"reg:{emp_id}:{rand}".encode(), hashlib.sha256).hexdigest()
+    return f"reg:{emp_id}:{rand}:{firma}"
+
+def reg_validar(token):
+    try:
+        prefix, emp_id, rand, firma = token.split(":")
+        if prefix != "reg": return None
+    except (ValueError, AttributeError):
+        return None
+    secret = _secret()
+    expected = hmac.new(secret.encode(), f"reg:{emp_id}:{rand}".encode(), hashlib.sha256).hexdigest()
+    return int(emp_id) if hmac.compare_digest(firma, expected) else None
+
+def qr_base64(data, size=8):
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=size, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+def qr_checkin_url():
+    return f"{BASE_URL}/checkin?token={qr_token()}"
+
+def qr_registro_url(emp_id):
+    return f"{BASE_URL}/registro-dispositivo?token={reg_token(emp_id)}"
+
+# ============================================================
+# FLASK APP
+# ============================================================
+
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "templates")
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-change-me")
-
 
 @app.errorhandler(Exception)
 def handle_error(e):
-    return jsonify({
-        "error": str(e),
-        "type": type(e).__name__,
-        "trace": traceback.format_exc(),
-    }), 500
-
-
-# --- Auth decorator ---
+    return jsonify({"error": str(e), "type": type(e).__name__, "trace": traceback.format_exc()}), 500
 
 def admin_required(f):
     @wraps(f)
@@ -49,441 +305,219 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-
-# ============================================================
-# DASHBOARD
-# ============================================================
-
+# --- DASHBOARD ---
 @app.route("/")
 def index():
     return render_template("dashboard.html")
 
-
 @app.route("/api/qr")
 def api_qr():
-    url = qr_manager.generar_qr_rotativo_url()
-    qr_b64 = qr_manager.generar_qr_base64(url)
-    remaining = qr_manager.QR_ROTATION_INTERVAL - (
-        int(time.time()) % qr_manager.QR_ROTATION_INTERVAL
-    )
-    return jsonify({
-        "qr_base64": qr_b64,
-        "remaining_seconds": remaining,
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-    })
-
+    url = qr_checkin_url()
+    b64 = qr_base64(url)
+    rem = QR_ROTATION_INTERVAL - (int(time.time()) % QR_ROTATION_INTERVAL)
+    return jsonify({"qr_base64": b64, "remaining_seconds": rem, "timestamp": datetime.now().strftime("%H:%M:%S")})
 
 @app.route("/api/registros-hoy")
 def api_registros_hoy():
-    registros = database.obtener_registros_dia()
-    entradas = sum(1 for r in registros if r["tipo"] == "entrada")
-    salidas = sum(1 for r in registros if r["tipo"] == "salida")
-    return jsonify({
-        "registros": registros,
-        "total": len(registros),
-        "entradas": entradas,
-        "salidas": salidas,
-        "fecha": date.today().strftime("%d/%m/%Y"),
-    })
+    regs = db_registros_dia()
+    ent = sum(1 for r in regs if r["tipo"] == "entrada")
+    sal = sum(1 for r in regs if r["tipo"] == "salida")
+    return jsonify({"registros": regs, "total": len(regs), "entradas": ent, "salidas": sal, "fecha": date.today().strftime("%d/%m/%Y")})
 
-
-# ============================================================
-# CHECK-IN (MOBILE)
-# ============================================================
-
+# --- CHECK-IN ---
 @app.route("/checkin")
 def checkin():
-    token_qr = request.args.get("token", "")
-    if not qr_manager.validar_token_qr(token_qr):
-        return render_template(
-            "confirmacion.html", exito=False,
-            mensaje="El codigo QR ha expirado. Escanea el QR actual de la pantalla.",
-        )
-    return render_template("checkin.html", token_qr=token_qr)
-
+    t = request.args.get("token", "")
+    if not qr_validar(t):
+        return render_template("confirmacion.html", exito=False, mensaje="El codigo QR ha expirado. Escanea el QR actual.")
+    return render_template("checkin.html", token_qr=t)
 
 @app.route("/api/checkin", methods=["POST"])
 def api_checkin():
     data = request.get_json()
-    if not data:
-        return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    if not data: return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    tqr = data.get("token_qr", "")
+    tdev = data.get("token_dispositivo", "")
+    if not qr_validar(tqr): return jsonify({"ok": False, "mensaje": "QR expirado."}), 400
+    if not tdev: return jsonify({"ok": False, "mensaje": "Dispositivo no registrado."}), 400
+    emp_id = device_validar(tdev)
+    if not emp_id: return jsonify({"ok": False, "mensaje": "Token invalido."}), 400
+    emp = db_obtener_empleado(emp_id)
+    if not emp or not emp["activo"]: return jsonify({"ok": False, "mensaje": "Empleado no encontrado o inactivo."}), 400
+    if emp["token_dispositivo"] != tdev: return jsonify({"ok": False, "mensaje": "Dispositivo no vinculado."}), 400
+    tipo = db_siguiente_tipo(emp_id)
+    db_registrar_asistencia(emp_id, tipo, tqr)
+    return jsonify({"ok": True, "mensaje": f"{tipo.capitalize()} registrada.", "nombre": emp["nombre"], "tipo": tipo})
 
-    token_qr = data.get("token_qr", "")
-    token_dispositivo = data.get("token_dispositivo", "")
-
-    if not qr_manager.validar_token_qr(token_qr):
-        return jsonify({"ok": False, "mensaje": "El codigo QR ha expirado. Escanea de nuevo."}), 400
-
-    if not token_dispositivo:
-        return jsonify({"ok": False, "mensaje": "Dispositivo no registrado."}), 400
-
-    emp_id = qr_manager.validar_token_dispositivo(token_dispositivo)
-    if emp_id is None:
-        return jsonify({"ok": False, "mensaje": "Token de dispositivo invalido."}), 400
-
-    empleado = database.obtener_empleado(emp_id)
-    if not empleado or not empleado["activo"]:
-        return jsonify({"ok": False, "mensaje": "Empleado no encontrado o inactivo."}), 400
-
-    if empleado["token_dispositivo"] != token_dispositivo:
-        return jsonify({"ok": False, "mensaje": "Este dispositivo no esta vinculado a tu cuenta."}), 400
-
-    tipo = database.obtener_siguiente_tipo(emp_id)
-    database.registrar_asistencia(emp_id, tipo, token_qr)
-
-    return jsonify({
-        "ok": True,
-        "mensaje": f"{tipo.capitalize()} registrada correctamente.",
-        "nombre": empleado["nombre"],
-        "tipo": tipo,
-    })
-
-
-# ============================================================
-# DEVICE REGISTRATION (MOBILE)
-# ============================================================
-
+# --- DEVICE REGISTRATION ---
 @app.route("/registro-dispositivo")
 def registro_dispositivo():
-    token_reg = request.args.get("token", "")
-    emp_id = qr_manager.validar_token_registro(token_reg)
-    if emp_id is None:
-        return render_template(
-            "confirmacion.html", exito=False,
-            mensaje="El enlace de registro es invalido o ha expirado.",
-        )
-
-    empleado = database.obtener_empleado(emp_id)
-    if not empleado:
-        return render_template(
-            "confirmacion.html", exito=False, mensaje="Empleado no encontrado.",
-        )
-
-    return render_template(
-        "registro_dispositivo.html", empleado=empleado, token_reg=token_reg,
-    )
-
+    t = request.args.get("token", "")
+    emp_id = reg_validar(t)
+    if not emp_id: return render_template("confirmacion.html", exito=False, mensaje="Enlace invalido o expirado.")
+    emp = db_obtener_empleado(emp_id)
+    if not emp: return render_template("confirmacion.html", exito=False, mensaje="Empleado no encontrado.")
+    return render_template("registro_dispositivo.html", empleado=emp, token_reg=t)
 
 @app.route("/api/registro-dispositivo", methods=["POST"])
 def api_registro_dispositivo():
     data = request.get_json()
-    if not data:
-        return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    if not data: return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    t = data.get("token_reg", "")
+    emp_id = reg_validar(t)
+    if not emp_id: return jsonify({"ok": False, "mensaje": "Token invalido."}), 400
+    emp = db_obtener_empleado(emp_id)
+    if not emp: return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 400
+    tok = device_token(emp_id)
+    db_vincular(emp_id, tok)
+    return jsonify({"ok": True, "mensaje": f"Vinculado para {emp['nombre']}.", "token_dispositivo": tok, "nombre": emp["nombre"]})
 
-    token_reg = data.get("token_reg", "")
-    emp_id = qr_manager.validar_token_registro(token_reg)
-    if emp_id is None:
-        return jsonify({"ok": False, "mensaje": "Token de registro invalido."}), 400
-
-    empleado = database.obtener_empleado(emp_id)
-    if not empleado:
-        return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 400
-
-    token_dispositivo = qr_manager.generar_token_dispositivo(emp_id)
-    database.vincular_dispositivo(emp_id, token_dispositivo)
-
-    return jsonify({
-        "ok": True,
-        "mensaje": f"Dispositivo vinculado para {empleado['nombre']}.",
-        "token_dispositivo": token_dispositivo,
-        "nombre": empleado["nombre"],
-    })
-
-
-# ============================================================
-# ADMIN
-# ============================================================
-
+# --- ADMIN ---
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "POST":
-        password = request.form.get("password", "")
-        if database.verificar_password_admin(password):
+        if db_verificar_password(request.form.get("password", "")):
             session["admin"] = True
             return redirect(url_for("admin_panel"))
         return render_template("admin_login.html", error="Contrasena incorrecta.")
     return render_template("admin_login.html")
-
 
 @app.route("/admin")
 @admin_required
 def admin_panel():
     return render_template("admin.html")
 
-
 @app.route("/admin/logout", methods=["POST"])
 def admin_logout():
     session.pop("admin", None)
     return redirect(url_for("index"))
 
-
 @app.route("/api/admin/empleados")
 @admin_required
 def api_admin_empleados():
-    empleados = database.listar_empleados(solo_activos=False)
-    return jsonify({"empleados": empleados})
-
+    return jsonify({"empleados": db_listar_empleados(solo_activos=False)})
 
 @app.route("/api/admin/empleados", methods=["POST"])
 @admin_required
-def api_admin_crear_empleado():
+def api_admin_crear():
     data = request.get_json()
-    if not data or not data.get("nombre", "").strip():
-        return jsonify({"ok": False, "mensaje": "El nombre es obligatorio."}), 400
+    if not data or not data.get("nombre", "").strip(): return jsonify({"ok": False, "mensaje": "Nombre obligatorio."}), 400
+    eid = db_crear_empleado(data["nombre"].strip(), data.get("departamento", "").strip(), data.get("hora_entrada", "09:00").strip(), data.get("hora_salida", "18:00").strip())
+    return jsonify({"ok": True, "id": eid})
 
-    emp_id = database.crear_empleado(
-        nombre=data["nombre"].strip(),
-        departamento=data.get("departamento", "").strip(),
-        hora_entrada=data.get("hora_entrada", "09:00").strip(),
-        hora_salida=data.get("hora_salida", "18:00").strip(),
-    )
-    return jsonify({"ok": True, "id": emp_id})
-
-
-@app.route("/api/admin/empleados/<int:emp_id>", methods=["PUT"])
+@app.route("/api/admin/empleados/<int:eid>", methods=["PUT"])
 @admin_required
-def api_admin_editar_empleado(emp_id):
+def api_admin_editar(eid):
     data = request.get_json()
-    if not data:
-        return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
-
-    database.actualizar_empleado(
-        emp_id,
-        nombre=data.get("nombre"),
-        departamento=data.get("departamento"),
-        hora_entrada=data.get("hora_entrada"),
-        hora_salida=data.get("hora_salida"),
-    )
+    if not data: return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    db_actualizar_empleado(eid, nombre=data.get("nombre"), departamento=data.get("departamento"), hora_entrada=data.get("hora_entrada"), hora_salida=data.get("hora_salida"))
     return jsonify({"ok": True})
 
-
-@app.route("/api/admin/empleados/<int:emp_id>/toggle", methods=["POST"])
+@app.route("/api/admin/empleados/<int:eid>/toggle", methods=["POST"])
 @admin_required
-def api_admin_toggle_empleado(emp_id):
-    emp = database.obtener_empleado(emp_id)
-    if not emp:
-        return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 404
-    nuevo_estado = 0 if emp["activo"] else 1
-    database.actualizar_empleado(emp_id, activo=nuevo_estado)
-    return jsonify({"ok": True, "activo": nuevo_estado})
+def api_admin_toggle(eid):
+    emp = db_obtener_empleado(eid)
+    if not emp: return jsonify({"ok": False, "mensaje": "No encontrado."}), 404
+    new = 0 if emp["activo"] else 1
+    db_actualizar_empleado(eid, activo=new)
+    return jsonify({"ok": True, "activo": new})
 
-
-@app.route("/api/admin/empleados/<int:emp_id>/qr-registro")
+@app.route("/api/admin/empleados/<int:eid>/qr-registro")
 @admin_required
-def api_admin_qr_registro(emp_id):
-    emp = database.obtener_empleado(emp_id)
-    if not emp:
-        return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 404
+def api_admin_qr(eid):
+    emp = db_obtener_empleado(eid)
+    if not emp: return jsonify({"ok": False, "mensaje": "No encontrado."}), 404
+    url = qr_registro_url(eid)
+    return jsonify({"ok": True, "qr_base64": qr_base64(url), "nombre": emp["nombre"]})
 
-    url = qr_manager.generar_qr_registro_url(emp_id)
-    qr_b64 = qr_manager.generar_qr_base64(url)
-    return jsonify({"ok": True, "qr_base64": qr_b64, "nombre": emp["nombre"]})
-
-
-@app.route("/api/admin/empleados/<int:emp_id>/desvincular", methods=["POST"])
+@app.route("/api/admin/empleados/<int:eid>/desvincular", methods=["POST"])
 @admin_required
-def api_admin_desvincular(emp_id):
-    emp = database.obtener_empleado(emp_id)
-    if not emp:
-        return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 404
-    database.desvincular_dispositivo(emp_id)
+def api_admin_desvincular(eid):
+    emp = db_obtener_empleado(eid)
+    if not emp: return jsonify({"ok": False, "mensaje": "No encontrado."}), 404
+    db_desvincular(eid)
     return jsonify({"ok": True})
-
 
 @app.route("/api/admin/config", methods=["GET"])
 @admin_required
 def api_admin_get_config():
-    return jsonify({
-        "nombre_empresa": database.get_config("nombre_empresa") or "NEVOX FARMA",
-        "tolerancia_minutos": database.get_config("tolerancia_minutos") or "15",
-    })
-
+    return jsonify({"nombre_empresa": db_get_config("nombre_empresa") or "NEVOX FARMA", "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15"})
 
 @app.route("/api/admin/config", methods=["POST"])
 @admin_required
 def api_admin_save_config():
     data = request.get_json()
-    if not data:
-        return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
-
-    if "nombre_empresa" in data:
-        database.set_config("nombre_empresa", data["nombre_empresa"])
-
+    if not data: return jsonify({"ok": False, "mensaje": "Datos invalidos."}), 400
+    if "nombre_empresa" in data: db_set_config("nombre_empresa", data["nombre_empresa"])
     if "tolerancia_minutos" in data:
         try:
-            tol = int(data["tolerancia_minutos"])
-            if tol < 0:
-                raise ValueError
-            database.set_config("tolerancia_minutos", str(tol))
+            t = int(data["tolerancia_minutos"])
+            if t < 0: raise ValueError
+            db_set_config("tolerancia_minutos", str(t))
         except ValueError:
-            return jsonify({"ok": False, "mensaje": "Tolerancia debe ser un numero positivo."}), 400
-
+            return jsonify({"ok": False, "mensaje": "Tolerancia invalida."}), 400
     if data.get("nuevo_password"):
-        if data["nuevo_password"] != data.get("confirmar_password"):
-            return jsonify({"ok": False, "mensaje": "Las contrasenas no coinciden."}), 400
-        if len(data["nuevo_password"]) < 4:
-            return jsonify({"ok": False, "mensaje": "La contrasena debe tener al menos 4 caracteres."}), 400
-        database.cambiar_password_admin(data["nuevo_password"])
-
+        if data["nuevo_password"] != data.get("confirmar_password"): return jsonify({"ok": False, "mensaje": "No coinciden."}), 400
+        if len(data["nuevo_password"]) < 4: return jsonify({"ok": False, "mensaje": "Min 4 caracteres."}), 400
+        db_cambiar_password(data["nuevo_password"])
     return jsonify({"ok": True, "mensaje": "Configuracion guardada."})
-
 
 @app.route("/api/admin/limpiar-registros", methods=["POST"])
 @admin_required
-def api_admin_limpiar_registros():
-    database.limpiar_registros()
+def api_admin_limpiar_reg():
+    db_limpiar_registros()
     return jsonify({"ok": True, "mensaje": "Registros eliminados."})
-
 
 @app.route("/api/admin/limpiar-todo", methods=["POST"])
 @admin_required
 def api_admin_limpiar_todo():
-    database.limpiar_registros_y_empleados()
+    db_limpiar_todo()
     return jsonify({"ok": True, "mensaje": "Registros y empleados eliminados."})
 
-
-# ============================================================
-# REPORTS
-# ============================================================
-
+# --- REPORTS ---
 @app.route("/reportes")
 def reportes():
     return render_template("reports.html")
-
 
 @app.route("/api/reportes/horas")
 def api_reportes_horas():
     desde = request.args.get("desde", date.today().replace(day=1).isoformat())
     hasta = request.args.get("hasta", date.today().isoformat())
-    empleados = database.listar_empleados()
-    resultado = []
-    for emp in empleados:
-        horas = database.calcular_horas_trabajadas(emp["id"], desde, hasta)
-        resultado.append({
-            "nombre": emp["nombre"],
-            "departamento": emp["departamento"],
-            "horas": horas,
-        })
-    return jsonify({"datos": resultado, "desde": desde, "hasta": hasta})
-
+    emps = db_listar_empleados()
+    datos = [{"nombre": e["nombre"], "departamento": e["departamento"], "horas": db_horas_trabajadas(e["id"], desde, hasta)} for e in emps]
+    return jsonify({"datos": datos, "desde": desde, "hasta": hasta})
 
 @app.route("/api/reportes/retardos")
 def api_reportes_retardos():
     desde = request.args.get("desde", date.today().replace(day=1).isoformat())
     hasta = request.args.get("hasta", date.today().isoformat())
-    retardos = database.obtener_retardos(desde, hasta)
-    return jsonify({"datos": retardos, "desde": desde, "hasta": hasta})
-
+    return jsonify({"datos": db_retardos(desde, hasta), "desde": desde, "hasta": hasta})
 
 @app.route("/api/reportes/exportar-excel")
-def api_reportes_exportar_excel():
+def api_exportar_excel():
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-
     desde = request.args.get("desde", date.today().replace(day=1).isoformat())
     hasta = request.args.get("hasta", date.today().isoformat())
-    emp_id = request.args.get("empleado_id")
-    if emp_id:
-        emp_id = int(emp_id)
-
-    registros = database.obtener_registros_rango(desde, hasta, emp_id)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Registros"
-
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill(start_color="ea8511", end_color="ea8511", fill_type="solid")
-    title_font = Font(bold=True, size=14, color="1d120e")
-    center = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style="thin", color="e0e0e2"),
-        right=Side(style="thin", color="e0e0e2"),
-        top=Side(style="thin", color="e0e0e2"),
-        bottom=Side(style="thin", color="e0e0e2"),
-    )
-    alt_fill = PatternFill(start_color="f7f7f8", end_color="f7f7f8", fill_type="solid")
-
-    ws.merge_cells("A1:E1")
-    ws["A1"] = f"NEVOX FARMA - Registros del {desde} al {hasta}"
-    ws["A1"].font = title_font
-    ws["A1"].alignment = Alignment(vertical="center")
-    ws.row_dimensions[1].height = 32
-
-    headers = ["Fecha", "Hora", "Empleado", "Departamento", "Tipo"]
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=3, column=col, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center
-        cell.border = thin_border
-    ws.row_dimensions[3].height = 28
-
-    for i, reg in enumerate(registros, 4):
-        dt = datetime.fromisoformat(reg["fecha_hora"])
-        row_fill = alt_fill if i % 2 == 0 else None
-        cells = [
-            ws.cell(row=i, column=1, value=dt.strftime("%Y-%m-%d")),
-            ws.cell(row=i, column=2, value=dt.strftime("%H:%M:%S")),
-            ws.cell(row=i, column=3, value=reg["nombre"]),
-            ws.cell(row=i, column=4, value=reg["departamento"]),
-            ws.cell(row=i, column=5, value=reg["tipo"].upper()),
-        ]
+    eid = request.args.get("empleado_id")
+    if eid: eid = int(eid)
+    regs = db_registros_rango(desde, hasta, eid)
+    wb = Workbook(); ws = wb.active; ws.title = "Registros"
+    hf = Font(bold=True, color="FFFFFF", size=11)
+    hfill = PatternFill(start_color="ea8511", end_color="ea8511", fill_type="solid")
+    tf = Font(bold=True, size=14, color="1d120e")
+    c = Alignment(horizontal="center", vertical="center")
+    b = Border(left=Side(style="thin", color="e0e0e2"), right=Side(style="thin", color="e0e0e2"), top=Side(style="thin", color="e0e0e2"), bottom=Side(style="thin", color="e0e0e2"))
+    af = PatternFill(start_color="f7f7f8", end_color="f7f7f8", fill_type="solid")
+    ws.merge_cells("A1:E1"); ws["A1"] = f"NEVOX FARMA - Registros {desde} al {hasta}"; ws["A1"].font = tf
+    for col, h in enumerate(["Fecha", "Hora", "Empleado", "Departamento", "Tipo"], 1):
+        cell = ws.cell(row=3, column=col, value=h); cell.font = hf; cell.fill = hfill; cell.alignment = c; cell.border = b
+    for i, r in enumerate(regs, 4):
+        dt = datetime.fromisoformat(r["fecha_hora"])
+        cells = [ws.cell(row=i, column=1, value=dt.strftime("%Y-%m-%d")), ws.cell(row=i, column=2, value=dt.strftime("%H:%M:%S")), ws.cell(row=i, column=3, value=r["nombre"]), ws.cell(row=i, column=4, value=r["departamento"]), ws.cell(row=i, column=5, value=r["tipo"].upper())]
         for cell in cells:
-            cell.border = thin_border
-            if row_fill:
-                cell.fill = row_fill
-        if reg["tipo"] == "entrada":
-            cells[4].font = Font(color="16a34a", bold=True)
-        else:
-            cells[4].font = Font(color="ea8511", bold=True)
-
-    ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 12
-    ws.column_dimensions["C"].width = 28
-    ws.column_dimensions["D"].width = 22
-    ws.column_dimensions["E"].width = 12
-
-    # Summary sheet
-    ws2 = wb.create_sheet("Horas Trabajadas")
-    ws2.merge_cells("A1:C1")
-    ws2["A1"] = f"NEVOX FARMA - Resumen de Horas ({desde} al {hasta})"
-    ws2["A1"].font = title_font
-    ws2["A1"].alignment = Alignment(vertical="center")
-    ws2.row_dimensions[1].height = 32
-
-    for col, h in enumerate(["Empleado", "Departamento", "Horas Trabajadas"], 1):
-        cell = ws2.cell(row=3, column=col, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center
-        cell.border = thin_border
-    ws2.row_dimensions[3].height = 28
-
-    empleados = database.listar_empleados()
-    for i, emp in enumerate(empleados, 4):
-        horas = database.calcular_horas_trabajadas(emp["id"], desde, hasta)
-        row_fill = alt_fill if i % 2 == 0 else None
-        cells = [
-            ws2.cell(row=i, column=1, value=emp["nombre"]),
-            ws2.cell(row=i, column=2, value=emp["departamento"]),
-            ws2.cell(row=i, column=3, value=f"{horas:.2f}"),
-        ]
-        for cell in cells:
-            cell.border = thin_border
-            if row_fill:
-                cell.fill = row_fill
-
-    ws2.column_dimensions["A"].width = 28
-    ws2.column_dimensions["B"].width = 22
-    ws2.column_dimensions["C"].width = 20
-
-    buffer = BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-
-    filename = f"registros_{desde}_{hasta}.xlsx"
-    return send_file(
-        buffer, as_attachment=True, download_name=filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+            cell.border = b
+            if i % 2 == 0: cell.fill = af
+    ws.column_dimensions["A"].width = 14; ws.column_dimensions["B"].width = 12; ws.column_dimensions["C"].width = 28; ws.column_dimensions["D"].width = 22; ws.column_dimensions["E"].width = 12
+    buf = BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=f"registros_{desde}_{hasta}.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
