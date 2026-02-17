@@ -16,14 +16,16 @@ from flask import (
 )
 
 # Agregar directorio raiz al path para importar modulos
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 import database
 import qr_manager
 
 app = Flask(
     __name__,
-    template_folder=os.path.join(os.path.dirname(__file__), "..", "templates"),
+    template_folder=os.path.join(ROOT_DIR, "templates"),
 )
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-change-me")
 
