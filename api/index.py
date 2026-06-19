@@ -14,7 +14,7 @@ import base64
 import traceback
 from io import BytesIO
 from functools import wraps
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 import requests as _http
 from flask import (
@@ -32,6 +32,42 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:5000").rstrip("/")
 QR_ROTATION_INTERVAL = 30
+
+# ------------------------------------------------------------
+# ZONA HORARIA
+# Supabase guarda fecha_hora en UTC. El servidor (Vercel) tambien corre en
+# UTC, por eso datetime.now()/date.today() dan la hora equivocada. Todo lo
+# que se muestre o filtre por "hoy" debe pasar por estos helpers (UTC-5).
+# ------------------------------------------------------------
+LOCAL_TZ = timezone(timedelta(hours=-5))  # Lima / Bogota / Quito
+
+
+def now_local():
+    return datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+
+
+def today_local():
+    return now_local().date()
+
+
+def to_local(s):
+    """Convierte un fecha_hora almacenado (UTC) a datetime local con tzinfo."""
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ)
+
+
+def local_day_bounds_utc(desde, hasta=None):
+    """Dado un rango de fechas LOCALES (YYYY-MM-DD) devuelve los limites
+    equivalentes en UTC para filtrar la columna fecha_hora en Supabase."""
+    hasta = hasta or desde
+    ini = datetime.fromisoformat(f"{desde}T00:00:00").replace(tzinfo=LOCAL_TZ)
+    fin = datetime.fromisoformat(f"{hasta}T23:59:59").replace(tzinfo=LOCAL_TZ)
+    return (
+        ini.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+        fin.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+    )
 
 
 def _sb_headers(prefer=None):
@@ -177,12 +213,12 @@ def db_registrar_asistencia(emp_id, tipo, token_usado=None):
 
 
 def db_ultimo_registro(emp_id, fecha=None):
-    if not fecha:
-        fecha = date.today().isoformat()
+    fecha = fecha or today_local().isoformat()
+    ini, fin = local_day_bounds_utc(fecha)
     data = _sb_get("registros", filters=[
         ("empleado_id", f"eq.{emp_id}"),
-        ("fecha_hora", f"gte.{fecha}T00:00:00"),
-        ("fecha_hora", f"lte.{fecha}T23:59:59"),
+        ("fecha_hora", f"gte.{ini}"),
+        ("fecha_hora", f"lte.{fin}"),
     ], order="fecha_hora.desc", limit=1)
     return data[0] if data else None
 
@@ -198,24 +234,30 @@ def _flatten_registros(data):
         emp = r.pop("empleados", {}) or {}
         r["nombre"] = emp.get("nombre", "")
         r["departamento"] = emp.get("departamento", "")
+        if r.get("fecha_hora"):
+            loc = to_local(r["fecha_hora"])
+            r["fecha_hora"] = loc.isoformat()        # ya en hora local (-05:00)
+            r["hora"] = loc.strftime("%H:%M:%S")     # listo para mostrar
+            r["fecha"] = loc.strftime("%d/%m/%Y")
         registros.append(r)
     return registros
 
 
 def db_registros_dia(fecha=None):
-    if not fecha:
-        fecha = date.today().isoformat()
+    fecha = fecha or today_local().isoformat()
+    ini, fin = local_day_bounds_utc(fecha)
     data = _sb_get("registros", select="*,empleados(nombre,departamento)", filters=[
-        ("fecha_hora", f"gte.{fecha}T00:00:00"),
-        ("fecha_hora", f"lte.{fecha}T23:59:59"),
+        ("fecha_hora", f"gte.{ini}"),
+        ("fecha_hora", f"lte.{fin}"),
     ], order="fecha_hora.desc")
     return _flatten_registros(data)
 
 
 def db_registros_rango(desde, hasta, emp_id=None):
+    ini, fin = local_day_bounds_utc(desde, hasta)
     filters = [
-        ("fecha_hora", f"gte.{desde}T00:00:00"),
-        ("fecha_hora", f"lte.{hasta}T23:59:59"),
+        ("fecha_hora", f"gte.{ini}"),
+        ("fecha_hora", f"lte.{fin}"),
     ]
     if emp_id:
         filters.append(("empleado_id", f"eq.{emp_id}"))
@@ -238,26 +280,33 @@ def db_horas_trabajadas(emp_id, desde, hasta):
 
 
 def db_retardos(desde, hasta):
-    empleados = db_listar_empleados()
-    try:
-        entradas = _sb_rpc("obtener_primera_entrada_por_dia", {"p_fecha_inicio": desde, "p_fecha_fin": hasta})
-    except Exception:
-        entradas = []
-    emp_map = {e["id"]: e for e in empleados}
+    emp_map = {e["id"]: e for e in db_listar_empleados()}
+    # Primera ENTRADA (hora local) por empleado y dia, calculada a partir de
+    # los registros ya convertidos a UTC-5. Asi la comparacion con la hora
+    # programada (que es local) es correcta.
+    primeras = {}  # (empleado_id, fecha_local) -> "HH:MM"
+    for r in db_registros_rango(desde, hasta):
+        if r["tipo"] != "entrada":
+            continue
+        loc = datetime.fromisoformat(r["fecha_hora"])  # ya en hora local
+        key = (r["empleado_id"], loc.strftime("%Y-%m-%d"))
+        hhmm = loc.strftime("%H:%M")
+        if key not in primeras or hhmm < primeras[key]:
+            primeras[key] = hhmm
+
+    tol = int(db_get_config("tolerancia_minutos") or "15")
     retardos = []
-    for entry in entradas:
-        emp = emp_map.get(entry["empleado_id"])
+    for (emp_id, fecha), hora_reg in sorted(primeras.items()):
+        emp = emp_map.get(emp_id)
         if not emp:
             continue
         hora_limite = emp["hora_entrada"]
-        hora_reg = entry["primera_hora"]
         if hora_reg > hora_limite:
-            tol = int(db_get_config("tolerancia_minutos") or "15")
             h, m = map(int, hora_limite.split(":"))
             lim = (datetime.combine(date.today(), datetime.min.time().replace(hour=h, minute=m)) + timedelta(minutes=tol)).strftime("%H:%M")
             retardos.append({
-                "empleado_id": emp["id"], "nombre": emp["nombre"],
-                "departamento": emp["departamento"], "fecha": entry["fecha"],
+                "empleado_id": emp_id, "nombre": emp["nombre"],
+                "departamento": emp["departamento"], "fecha": fecha,
                 "hora_programada": hora_limite, "hora_registro": hora_reg,
                 "con_tolerancia": hora_reg <= lim,
             })
@@ -377,7 +426,7 @@ def handle_error(e):
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.now().isoformat()})
+    return jsonify({"status": "ok", "time": now_local().isoformat()})
 
 
 def admin_required(f):
@@ -402,7 +451,7 @@ def api_qr():
     url = qr_checkin_url()
     b64 = qr_base64(url)
     rem = QR_ROTATION_INTERVAL - (int(time.time()) % QR_ROTATION_INTERVAL)
-    return jsonify({"qr_base64": b64, "remaining_seconds": rem, "timestamp": datetime.now().strftime("%H:%M:%S")})
+    return jsonify({"qr_base64": b64, "remaining_seconds": rem, "timestamp": now_local().strftime("%H:%M:%S")})
 
 
 @app.route("/api/registros-hoy")
@@ -410,7 +459,7 @@ def api_registros_hoy():
     regs = db_registros_dia()
     ent = sum(1 for r in regs if r["tipo"] == "entrada")
     sal = sum(1 for r in regs if r["tipo"] == "salida")
-    return jsonify({"registros": regs, "total": len(regs), "entradas": ent, "salidas": sal, "fecha": date.today().strftime("%d/%m/%Y")})
+    return jsonify({"registros": regs, "total": len(regs), "entradas": ent, "salidas": sal, "fecha": today_local().strftime("%d/%m/%Y")})
 
 
 # --- CHECK-IN ---
@@ -623,8 +672,8 @@ def reportes():
 
 @app.route("/api/reportes/horas")
 def api_reportes_horas():
-    desde = request.args.get("desde", date.today().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", date.today().isoformat())
+    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
+    hasta = request.args.get("hasta", today_local().isoformat())
     emps = db_listar_empleados()
     datos = [{"nombre": e["nombre"], "departamento": e["departamento"], "horas": db_horas_trabajadas(e["id"], desde, hasta)} for e in emps]
     return jsonify({"datos": datos, "desde": desde, "hasta": hasta})
@@ -632,8 +681,8 @@ def api_reportes_horas():
 
 @app.route("/api/reportes/retardos")
 def api_reportes_retardos():
-    desde = request.args.get("desde", date.today().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", date.today().isoformat())
+    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
+    hasta = request.args.get("hasta", today_local().isoformat())
     return jsonify({"datos": db_retardos(desde, hasta), "desde": desde, "hasta": hasta})
 
 
@@ -642,8 +691,8 @@ def api_exportar_excel():
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-    desde = request.args.get("desde", date.today().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", date.today().isoformat())
+    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
+    hasta = request.args.get("hasta", today_local().isoformat())
     eid = request.args.get("empleado_id")
     if eid:
         eid = int(eid)

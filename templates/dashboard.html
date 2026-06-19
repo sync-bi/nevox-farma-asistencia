@@ -108,8 +108,7 @@ async function refreshRecords() {
             tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--gris);padding:40px;">Sin registros hoy</td></tr>';
         } else {
             tbody.innerHTML = data.registros.map(r => {
-                const dt = new Date(r.fecha_hora);
-                const hora = dt.toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                const hora = r.hora;  // hora local (UTC-5) ya formateada por el servidor
                 const badgeClass = r.tipo === 'entrada' ? 'badge-entrada' : 'badge-salida';
                 return `<tr>
                     <td>${hora}</td>
@@ -120,8 +119,7 @@ async function refreshRecords() {
             }).join('');
 
             const last = data.registros[0];
-            const lastDt = new Date(last.fecha_hora);
-            const lastHora = lastDt.toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+            const lastHora = last.hora;  // hora local (UTC-5) del servidor
             const el = document.getElementById('last-event');
             el.className = 'last-event ' + last.tipo;
             document.getElementById('last-event-text').textContent =
