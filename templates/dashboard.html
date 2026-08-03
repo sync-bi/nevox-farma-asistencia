@@ -23,6 +23,38 @@
 .records-section .card-header { display: flex; align-items: center; justify-content: space-between; }
 .records-date { font-size: 14px; font-weight: 400; color: var(--gris); }
 .records-table { max-height: 500px; overflow-y: auto; }
+
+/* Aviso de jornadas sin cerrar */
+.alerta {
+    display: none;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    border: 1px solid var(--gris-border);
+    background: var(--blanco);
+}
+.alerta.show { display: block; }
+.alerta-titulo { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.alerta-sub { font-size: 13px; color: var(--texto-sec); margin-top: 4px; }
+.alerta-lista { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.alerta-chip {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--gris-bg);
+    border: 1px solid var(--gris-border);
+}
+.alerta-chip span { font-weight: 400; color: var(--texto-sec); }
+/* Dentro de jornada: informativo */
+.alerta.dentro { background: var(--gris-bg); }
+.alerta.dentro .alerta-titulo { color: var(--texto-sec); }
+/* Pasada la hora de salida: hay que actuar */
+.alerta.vencido { background: var(--rojo-light); border-color: var(--rojo-border); }
+.alerta.vencido .alerta-titulo { color: var(--rojo); }
+.alerta.vencido .alerta-chip { background: var(--blanco); border-color: var(--rojo-border); color: var(--rojo); }
+.alerta.vencido .alerta-chip span { color: var(--rojo); }
+
 @media (max-width: 900px) {
     .dashboard { grid-template-columns: 1fr; }
     .qr-image img { width: 200px; height: 200px; }
@@ -30,6 +62,12 @@
 {% endblock %}
 
 {% block content %}
+<div id="alerta" class="alerta">
+    <div class="alerta-titulo"><span id="alerta-icono"></span><span id="alerta-texto"></span></div>
+    <div id="alerta-sub" class="alerta-sub"></div>
+    <div id="alerta-lista" class="alerta-lista"></div>
+</div>
+
 <div class="dashboard">
     <div class="qr-section">
         <div class="card qr-card">
@@ -128,9 +166,41 @@ async function refreshRecords() {
     } catch(e) {}
 }
 
+// Avisa quien tiene la jornada abierta. Antes de la hora de salida es solo
+// informativo (estan trabajando); despues es una salida sin marcar y se
+// muestra en rojo, que es cuando alguien todavia puede corregirlo.
+async function refreshPendientes() {
+    try {
+        const resp = await fetch('/api/pendientes-hoy');
+        const data = await resp.json();
+        const box = document.getElementById('alerta');
+
+        if (data.total === 0) {
+            box.className = 'alerta';
+            return;
+        }
+        const vencido = data.vencidos > 0;
+        const plural = data.total === 1 ? '' : 's';
+        box.className = 'alerta show ' + (vencido ? 'vencido' : 'dentro');
+        document.getElementById('alerta-icono').textContent = vencido ? '⚠️' : '⏱️';
+        document.getElementById('alerta-texto').textContent = vencido
+            ? `${data.total} persona${plural} sin marcar la SALIDA`
+            : `${data.total} persona${plural} en jornada`;
+        document.getElementById('alerta-sub').textContent = vencido
+            ? `Ya paso la hora de salida (${data.salida_programada}). Si no marcan, ese dia no suma horas ni extras y hay que corregirlo en Admin.`
+            : `Jornada abierta. La salida programada es a las ${data.salida_programada || '--:--'}.`;
+        document.getElementById('alerta-lista').innerHTML = data.pendientes.map(p => {
+            const h = Math.floor(p.minutos / 60), m = p.minutos % 60;
+            return `<div class="alerta-chip">${p.nombre} <span>desde ${p.desde} &middot; ${h}h ${m}m</span></div>`;
+        }).join('');
+    } catch(e) {}
+}
+
 refreshQR();
 refreshRecords();
+refreshPendientes();
 setInterval(refreshQR, 5000);
 setInterval(refreshRecords, 10000);
+setInterval(refreshPendientes, 30000);
 </script>
 {% endblock %}

@@ -168,6 +168,15 @@
             border-radius: 6px;
             margin-top: 14px;
         }
+
+        .hint-aviso {
+            display: block;
+            background: var(--salida-light);
+            border-color: var(--salida-border);
+            color: var(--salida);
+            font-size: 13px;
+            line-height: 1.5;
+        }
     </style>
 </head>
 <body>
@@ -236,6 +245,7 @@
                         <span class="badge ${badgeClass}">${data.tipo.toUpperCase()}</span>
                         <p class="hora">${data.hora || ''}</p>
                         ${data.duplicado ? '<span class="hint">Ya estaba registrado. No se creo un registro nuevo.</span>' : ''}
+                        ${data.recordatorio ? '<span class="hint hint-aviso">' + data.recordatorio + '</span>' : ''}
                     `;
                 } else {
                     resultadoEl.className = "status-box status-error";

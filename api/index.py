@@ -437,7 +437,9 @@ def _jornadas_por_dia(registros):
             d["ultima_salida"] = dt
 
     for d in dias.values():
-        if d.pop("pendiente") is not None:
+        # La entrada que quedo sin cerrar; sirve para avisar en el dashboard.
+        d["abierta_desde"] = d.pop("pendiente")
+        if d["abierta_desde"] is not None:
             d["entradas_sin_salida"] += 1
         d["incompleto"] = bool(d["entradas_sin_salida"] or d["salidas_sin_entrada"])
         faltantes = []
@@ -656,6 +658,37 @@ def db_eliminar_registro(reg_id):
     _sb_delete("registros", [("id", f"eq.{reg_id}")])
 
 
+def db_sin_cerrar(fecha=None):
+    """Quien tiene una entrada abierta hoy. Mientras no pase la hora de salida
+    programada es normal (estan trabajando); despues, es una salida sin marcar."""
+    fecha = fecha or today_local().isoformat()
+    fecha_d = date.fromisoformat(fecha)
+    turno = db_get_horario_semanal()[str(fecha_d.weekday())]
+    salida_prog = turno["salida"] if turno else None
+    ahora = now_local()
+    vencido = bool(salida_prog and ahora.strftime("%H:%M") > salida_prog)
+
+    pendientes = []
+    for (eid, _f), d in _jornadas_por_dia(db_registros_rango(fecha, fecha)).items():
+        if d["abierta_desde"] is None:
+            continue
+        pendientes.append({
+            "empleado_id": eid, "nombre": d["nombre"],
+            "departamento": d["departamento"] or SIN_AREA,
+            "desde": d["abierta_desde"].strftime("%H:%M"),
+            "minutos": max(0, int((ahora - d["abierta_desde"]).total_seconds() // 60)),
+            "vencido": vencido,
+        })
+    pendientes.sort(key=lambda p: p["nombre"])
+    return {
+        "pendientes": pendientes,
+        "total": len(pendientes),
+        "vencidos": len(pendientes) if vencido else 0,
+        "salida_programada": salida_prog or "",
+        "fecha": fecha_d.strftime("%d/%m/%Y"),
+    }
+
+
 def db_dias_por_corregir(desde, hasta, emp_id=None):
     """Dias con marcas faltantes, listos para que el admin los arregle."""
     dias = _jornadas_por_dia(db_registros_rango(desde, hasta, emp_id))
@@ -817,6 +850,11 @@ def api_qr():
     return jsonify({"qr_base64": b64, "remaining_seconds": rem, "timestamp": now_local().strftime("%H:%M:%S")})
 
 
+@app.route("/api/pendientes-hoy")
+def api_pendientes_hoy():
+    return jsonify(db_sin_cerrar())
+
+
 @app.route("/api/registros-hoy")
 def api_registros_hoy():
     regs = db_registros_dia()
@@ -871,6 +909,9 @@ def api_checkin():
         "ok": True, "duplicado": False, "nombre": emp["nombre"],
         "tipo": tipo, "hora": hora,
         "mensaje": f"{tipo.capitalize()} registrada.",
+        # El olvido de la salida es lo que mas ensucia los reportes: se avisa
+        # en el momento, que es cuando la persona todavia puede hacer algo.
+        "recordatorio": "No olvides marcar tu SALIDA al terminar la jornada." if tipo == "entrada" else "",
     })
 
 
