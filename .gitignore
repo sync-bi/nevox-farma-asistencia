@@ -9,3 +9,7 @@ dist/
 build/
 .vercel/
 node_modules/
+
+.vercel
+
+.preview/

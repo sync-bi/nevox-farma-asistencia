@@ -28,32 +28,109 @@
 .alerta {
     display: none;
     border-radius: 12px;
-    padding: 16px 20px;
-    margin-bottom: 20px;
+    margin-bottom: 24px;
     border: 1px solid var(--gris-border);
     background: var(--blanco);
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .alerta.show { display: block; }
-.alerta-titulo { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.alerta-sub { font-size: 13px; color: var(--texto-sec); margin-top: 4px; }
-.alerta-lista { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.alerta-chip {
-    font-size: 13px;
-    font-weight: 600;
-    padding: 6px 12px;
-    border-radius: 999px;
+
+.alerta-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--gris-border);
     background: var(--gris-bg);
+}
+.alerta-icono {
+    width: 38px; height: 38px;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 10px;
+    font-size: 18px;
+    background: var(--blanco);
     border: 1px solid var(--gris-border);
 }
-.alerta-chip span { font-weight: 400; color: var(--texto-sec); }
-/* Dentro de jornada: informativo */
-.alerta.dentro { background: var(--gris-bg); }
-.alerta.dentro .alerta-titulo { color: var(--texto-sec); }
+.alerta-info { min-width: 0; flex: 1; }
+.alerta-titulo { font-size: 15px; font-weight: 700; color: var(--negro); }
+.alerta-sub { font-size: 12.5px; color: var(--texto-sec); margin-top: 2px; }
+.alerta-meta {
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--gris);
+}
+.alerta-meta b { display: block; font-size: 17px; letter-spacing: 0; color: var(--texto); margin-top: 2px; }
+
+/* Grilla de personas: se acomoda sola sin amontonarse */
+.alerta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(212px, 1fr));
+    gap: 10px;
+    padding: 16px 20px;
+}
+.persona {
+    border: 1px solid var(--gris-border);
+    border-left: 3px solid var(--gris);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--blanco);
+    min-width: 0;
+}
+.persona-nombre {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--negro);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.persona-area {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--gris);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.persona-datos {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--gris-border);
+}
+.persona-desde { font-size: 12px; color: var(--texto-sec); }
+.persona-desde b { font-weight: 600; color: var(--texto); }
+.persona-tiempo { font-size: 12.5px; font-weight: 700; color: var(--texto-sec); font-variant-numeric: tabular-nums; }
+
+/* Dentro de jornada: informativo, en verde suave */
+.alerta.dentro .alerta-icono { border-color: var(--verde-border); background: var(--verde-light); }
+.alerta.dentro .persona { border-left-color: var(--verde); }
+
 /* Pasada la hora de salida: hay que actuar */
-.alerta.vencido { background: var(--rojo-light); border-color: var(--rojo-border); }
+.alerta.vencido { border-color: var(--rojo-border); }
+.alerta.vencido .alerta-head { background: var(--rojo-light); border-bottom-color: var(--rojo-border); }
+.alerta.vencido .alerta-icono { border-color: var(--rojo-border); background: var(--blanco); }
 .alerta.vencido .alerta-titulo { color: var(--rojo); }
-.alerta.vencido .alerta-chip { background: var(--blanco); border-color: var(--rojo-border); color: var(--rojo); }
-.alerta.vencido .alerta-chip span { color: var(--rojo); }
+.alerta.vencido .alerta-meta b { color: var(--rojo); }
+.alerta.vencido .persona { border-color: var(--rojo-border); border-left-color: var(--rojo); }
+.alerta.vencido .persona-tiempo { color: var(--rojo); }
+
+@media (max-width: 600px) {
+    .alerta-head { flex-wrap: wrap; }
+    .alerta-meta { text-align: left; }
+    .alerta-grid { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 900px) {
     .dashboard { grid-template-columns: 1fr; }
@@ -63,9 +140,18 @@
 
 {% block content %}
 <div id="alerta" class="alerta">
-    <div class="alerta-titulo"><span id="alerta-icono"></span><span id="alerta-texto"></span></div>
-    <div id="alerta-sub" class="alerta-sub"></div>
-    <div id="alerta-lista" class="alerta-lista"></div>
+    <div class="alerta-head">
+        <div id="alerta-icono" class="alerta-icono"></div>
+        <div class="alerta-info">
+            <div id="alerta-texto" class="alerta-titulo"></div>
+            <div id="alerta-sub" class="alerta-sub"></div>
+        </div>
+        <div class="alerta-meta">
+            <span id="alerta-meta-label">Salida programada</span>
+            <b id="alerta-meta-valor"></b>
+        </div>
+    </div>
+    <div id="alerta-grid" class="alerta-grid"></div>
 </div>
 
 <div class="dashboard">
@@ -166,6 +252,9 @@ async function refreshRecords() {
     } catch(e) {}
 }
 
+// Los nombres vienen en MAYUSCULAS desde la base y en bloque se leen mal.
+const titulo = s => s.toLowerCase().replace(/(^|\s)\p{L}/gu, c => c.toUpperCase());
+
 // Avisa quien tiene la jornada abierta. Antes de la hora de salida es solo
 // informativo (estan trabajando); despues es una salida sin marcar y se
 // muestra en rojo, que es cuando alguien todavia puede corregirlo.
@@ -182,16 +271,30 @@ async function refreshPendientes() {
         const vencido = data.vencidos > 0;
         const plural = data.total === 1 ? '' : 's';
         box.className = 'alerta show ' + (vencido ? 'vencido' : 'dentro');
+
         document.getElementById('alerta-icono').textContent = vencido ? '⚠️' : '⏱️';
         document.getElementById('alerta-texto').textContent = vencido
-            ? `${data.total} persona${plural} sin marcar la SALIDA`
+            ? `${data.total} persona${plural} sin marcar la salida`
             : `${data.total} persona${plural} en jornada`;
         document.getElementById('alerta-sub').textContent = vencido
-            ? `Ya paso la hora de salida (${data.salida_programada}). Si no marcan, ese dia no suma horas ni extras y hay que corregirlo en Admin.`
-            : `Jornada abierta. La salida programada es a las ${data.salida_programada || '--:--'}.`;
-        document.getElementById('alerta-lista').innerHTML = data.pendientes.map(p => {
+            ? 'Ya paso la hora de salida. Si no marcan, el dia no suma horas ni extras y hay que corregirlo en Admin.'
+            : 'Jornada abierta. Se cierra al marcar la salida.';
+        document.getElementById('alerta-meta-label').textContent = vencido ? 'Salida era' : 'Salida programada';
+        document.getElementById('alerta-meta-valor').textContent = data.salida_programada || '--:--';
+
+        // Primero quien lleva mas tiempo dentro: es el caso mas urgente.
+        const orden = data.pendientes.slice().sort((a, b) => b.minutos - a.minutos);
+        document.getElementById('alerta-grid').innerHTML = orden.map(p => {
             const h = Math.floor(p.minutos / 60), m = p.minutos % 60;
-            return `<div class="alerta-chip">${p.nombre} <span>desde ${p.desde} &middot; ${h}h ${m}m</span></div>`;
+            const tiempo = h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+            return `<div class="persona">
+                <div class="persona-nombre" title="${p.nombre}">${titulo(p.nombre)}</div>
+                <div class="persona-area">${p.departamento}</div>
+                <div class="persona-datos">
+                    <span class="persona-desde">Entro <b>${p.desde}</b></span>
+                    <span class="persona-tiempo">${tiempo}</span>
+                </div>
+            </div>`;
         }).join('');
     } catch(e) {}
 }
