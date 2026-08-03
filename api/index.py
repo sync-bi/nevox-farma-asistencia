@@ -237,6 +237,26 @@ def _punto_medio(hhmm_a, hhmm_b):
     return f"{med // 60:02d}:{med % 60:02d}"
 
 
+def db_registros_hoy_empleado(emp_id, fecha=None):
+    """Marcas del empleado en el dia local indicado, en orden ascendente."""
+    fecha = fecha or today_local().isoformat()
+    ini, fin = local_day_bounds_utc(fecha)
+    return _sb_get("registros", filters=[
+        ("empleado_id", f"eq.{emp_id}"),
+        ("fecha_hora", f"gte.{ini}"),
+        ("fecha_hora", f"lte.{fin}"),
+    ], order="fecha_hora.asc")
+
+
+def tipo_por_hora(momento, horario=None):
+    """Tipo de la PRIMERA marca del dia, decidido por la hora: antes del punto
+    medio de la jornada es entrada, despues es salida."""
+    turno = (horario or db_get_horario_semanal())[str(momento.date().weekday())]
+    if not turno:
+        return "entrada"  # dia no laboral: no hay jornada de referencia
+    return "entrada" if momento.strftime("%H:%M") < _punto_medio(turno["entrada"], turno["salida"]) else "salida"
+
+
 def db_siguiente_tipo(emp_id, momento=None):
     """Tipo del proximo registro.
 
@@ -250,12 +270,7 @@ def db_siguiente_tipo(emp_id, momento=None):
     ultimo = db_ultimo_registro(emp_id)
     if ultimo is not None:
         return "entrada" if ultimo["tipo"] == "salida" else "salida"
-
-    momento = momento or now_local()
-    turno = db_get_horario_semanal()[str(momento.date().weekday())]
-    if not turno:
-        return "entrada"  # dia no laboral: no hay jornada de referencia
-    return "entrada" if momento.strftime("%H:%M") < _punto_medio(turno["entrada"], turno["salida"]) else "salida"
+    return tipo_por_hora(momento or now_local())
 
 
 # Ventana anti-rebote: /checkin dispara el registro en cada carga de la pagina,
@@ -274,16 +289,6 @@ def db_get_antirrebote():
         return ANTIRREBOTE_DEFAULT
 
 
-def registro_reciente(emp_id):
-    """Ultimo registro del empleado si cae dentro de la ventana anti-rebote."""
-    ventana = db_get_antirrebote()
-    if ventana <= 0:
-        return None
-    ultimo = db_ultimo_registro(emp_id)
-    if not ultimo or not ultimo.get("fecha_hora"):
-        return None
-    seg = (now_local() - to_local(ultimo["fecha_hora"])).total_seconds()
-    return ultimo if 0 <= seg < ventana else None
 
 
 def _flatten_registros(data):
@@ -341,6 +346,11 @@ def db_registros_rango(desde, hasta, emp_id=None):
 DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 
 SIN_AREA = "Sin area"  # etiqueta para empleados sin departamento asignado
+
+# En NEVOX FARMA el almuerzo NO se marca: cada dia son exactamente dos marcas,
+# la entrada y la salida. Cualquier marca adicional se rechaza en el check-in y
+# los dias historicos que tengan mas quedan senalados para revision.
+MARCAS_ESPERADAS = 2
 
 # Horario "Apoyo" informado por NEVOX FARMA (28/07/2026).
 HORARIO_SEMANAL_DEFAULT = {
@@ -442,12 +452,19 @@ def _jornadas_por_dia(registros):
         if d["abierta_desde"] is not None:
             d["entradas_sin_salida"] += 1
         d["incompleto"] = bool(d["entradas_sin_salida"] or d["salidas_sin_entrada"])
+        # En NEVOX no se marca el almuerzo: se esperan exactamente 2 marcas al
+        # dia. Mas de dos es una anomalia que hay que revisar aunque el dia
+        # cierre bien (tipico de los escaneos duplicados que ya no ocurren).
+        d["exceso_marcas"] = max(0, d["marcas"] - MARCAS_ESPERADAS)
         faltantes = []
         if d["entradas_sin_salida"]:
             faltantes.append("Falta salida")
         if d["salidas_sin_entrada"]:
             faltantes.append("Falta entrada")
+        if d["exceso_marcas"]:
+            faltantes.append(f"{d['marcas']} marcas (se esperan {MARCAS_ESPERADAS})")
         d["motivo"] = " y ".join(faltantes)
+        d["revisar"] = bool(d["incompleto"] or d["exceso_marcas"])
     return dias
 
 
@@ -521,6 +538,7 @@ def db_resumen_periodo(desde, hasta, emp_id=None, departamento=None):
             "extra_horas": round(extra / 60, 2),
             "no_laboral": turno is None,
             "incompleto": d["incompleto"],
+            "revisar": d["revisar"],
             "motivo": d["motivo"],
             "marcas": d["marcas"],
         })
@@ -694,7 +712,7 @@ def db_dias_por_corregir(desde, hasta, emp_id=None):
     dias = _jornadas_por_dia(db_registros_rango(desde, hasta, emp_id))
     pendientes = []
     for (eid, fecha), d in dias.items():
-        if not d["incompleto"]:
+        if not d["revisar"]:
             continue
         fecha_d = date.fromisoformat(fecha)
         pendientes.append({
@@ -892,17 +910,35 @@ def api_checkin():
     if emp["token_dispositivo"] != tdev:
         return jsonify({"ok": False, "mensaje": "Dispositivo no vinculado."}), 400
 
-    # Recarga / doble escaneo: no se crea un registro nuevo, se repite el anterior.
-    previo = registro_reciente(emp_id)
-    if previo:
-        hora = to_local(previo["fecha_hora"]).strftime("%H:%M:%S")
-        return jsonify({
-            "ok": True, "duplicado": True, "nombre": emp["nombre"],
-            "tipo": previo["tipo"], "hora": hora,
-            "mensaje": f"Ya habias registrado tu {previo['tipo']} a las {hora}.",
-        })
+    # Una sola consulta con las marcas de hoy: sirve para el anti-rebote, para
+    # saber si la jornada ya esta completa y para decidir el tipo.
+    regs_hoy = db_registros_hoy_empleado(emp_id)
 
-    tipo = db_siguiente_tipo(emp_id)
+    # Recarga / doble escaneo: no se crea un registro nuevo, se repite el anterior.
+    ventana = db_get_antirrebote()
+    if regs_hoy and ventana > 0:
+        previo = regs_hoy[-1]
+        seg = (now_local() - to_local(previo["fecha_hora"])).total_seconds()
+        if 0 <= seg < ventana:
+            hora = to_local(previo["fecha_hora"]).strftime("%H:%M:%S")
+            return jsonify({
+                "ok": True, "duplicado": True, "nombre": emp["nombre"],
+                "tipo": previo["tipo"], "hora": hora,
+                "mensaje": f"Ya habias registrado tu {previo['tipo']} a las {hora}.",
+            })
+
+    # El almuerzo no se marca: dos marcas por dia y nada mas. Un tercer escaneo
+    # antes creaba una entrada huerfana que dañaba el dia entero.
+    if any(r["tipo"] == "entrada" for r in regs_hoy) and any(r["tipo"] == "salida" for r in regs_hoy):
+        entrada = next(to_local(r["fecha_hora"]).strftime("%H:%M") for r in regs_hoy if r["tipo"] == "entrada")
+        salida = next(to_local(r["fecha_hora"]).strftime("%H:%M") for r in reversed(regs_hoy) if r["tipo"] == "salida")
+        return jsonify({
+            "ok": False, "jornada_completa": True, "nombre": emp["nombre"],
+            "mensaje": f"Tu jornada de hoy ya esta registrada: entrada {entrada} y salida {salida}. "
+                       f"El almuerzo no se marca. Si algo esta mal, avisa a Recursos Humanos.",
+        }), 409
+
+    tipo = ("entrada" if regs_hoy[-1]["tipo"] == "salida" else "salida") if regs_hoy else tipo_por_hora(now_local())
     creado = db_registrar_asistencia(emp_id, tipo, tqr)
     hora = to_local(creado["fecha_hora"]).strftime("%H:%M:%S") if creado and creado.get("fecha_hora") else now_local().strftime("%H:%M:%S")
     return jsonify({
@@ -1229,7 +1265,7 @@ def api_reportes_horas_extras():
     data = db_resumen_periodo(desde, hasta, int(eid) if eid else None, area)
     detalle = data["detalle"]
     if request.args.get("solo_extras", "1") == "1":
-        detalle = [d for d in detalle if d["extra_min"] > 0 or d["incompleto"]]
+        detalle = [d for d in detalle if d["extra_min"] > 0 or d["revisar"]]
     return jsonify({
         "detalle": detalle, "resumen": data["resumen"],
         "horario": data["horario"], "reglas": data["reglas"],
@@ -1363,11 +1399,11 @@ def api_exportar_excel():
         notas = []
         if d["no_laboral"]:
             notas.append("Dia no laboral")
-        if d["incompleto"]:
+        if d["revisar"]:
             notas.append(d["motivo"])
         return " / ".join(notas)
 
-    detalle_ext = [d for d in periodo["detalle"] if d["extra_bruto_min"] > 0 or d["incompleto"]]
+    detalle_ext = [d for d in periodo["detalle"] if d["extra_bruto_min"] > 0 or d["revisar"]]
     armar_hoja(
         wb.create_sheet("Horas Extras"),
         f"NEVOX FARMA - Horas extras {desde} al {hasta} "

@@ -100,6 +100,11 @@
             border: 1px solid var(--rojo-border);
         }
 
+        .status-info {
+            background: var(--naranja-light);
+            border: 1px solid var(--naranja-border);
+        }
+
         .spinner {
             border: 3px solid var(--gris-border);
             border-top: 3px solid var(--naranja);
@@ -247,6 +252,13 @@
                         ${data.duplicado ? '<span class="hint">Ya estaba registrado. No se creo un registro nuevo.</span>' : ''}
                         ${data.recordatorio ? '<span class="hint hint-aviso">' + data.recordatorio + '</span>' : ''}
                     `;
+                } else if (data.jornada_completa) {
+                    // No es un error del empleado: ya marco entrada y salida.
+                    resultadoEl.className = "status-box status-info";
+                    resultadoEl.innerHTML = `
+                        <div class="icon">&#9989;</div>
+                        <p class="nombre">${data.nombre}</p>
+                        <p class="msg">${data.mensaje}</p>`;
                 } else {
                     resultadoEl.className = "status-box status-error";
                     resultadoEl.innerHTML = `<div class="icon">&#10060;</div><p class="msg msg-error">${data.mensaje}</p>`;

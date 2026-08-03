@@ -458,7 +458,7 @@ async function queryOvertime() {
         d => {
             const notas = [];
             if (d.no_laboral) notas.push('<span class="badge badge-finde">Fin de semana</span>');
-            if (d.incompleto) notas.push(`<span class="badge badge-retardo">${d.motivo}</span>`);
+            if (d.revisar) notas.push(`<span class="badge badge-retardo">${d.motivo}</span>`);
             const validada = d.extra_min > 0
                 ? `<span class="badge badge-extra">${fmtMin(d.extra_min)}</span>`
                 : '<span class="muted">—</span>';
