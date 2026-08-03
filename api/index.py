@@ -225,9 +225,37 @@ def db_ultimo_registro(emp_id, fecha=None):
     return data[0] if data else None
 
 
-def db_siguiente_tipo(emp_id):
+def _minutos_del_dia(hhmm):
+    h, m = map(int, hhmm.split(":")[:2])
+    return h * 60 + m
+
+
+def _punto_medio(hhmm_a, hhmm_b):
+    a = _minutos_del_dia(hhmm_a)
+    b = _minutos_del_dia(hhmm_b)
+    med = (a + b) // 2
+    return f"{med // 60:02d}:{med % 60:02d}"
+
+
+def db_siguiente_tipo(emp_id, momento=None):
+    """Tipo del proximo registro.
+
+    Si el empleado ya marco hoy se alterna a partir del ultimo registro. Si es
+    la PRIMERA marca del dia no hay nada con que alternar, asi que se decide
+    por la hora: antes del punto medio de la jornada es entrada, despues es
+    salida. Sin esto, a quien se le olvidaba marcar la entrada en la manana se
+    le registraba la salida de la tarde como "entrada", lo que ademas de
+    perder el dia generaba un retardo falso de varias horas.
+    """
     ultimo = db_ultimo_registro(emp_id)
-    return "entrada" if (ultimo is None or ultimo["tipo"] == "salida") else "salida"
+    if ultimo is not None:
+        return "entrada" if ultimo["tipo"] == "salida" else "salida"
+
+    momento = momento or now_local()
+    turno = db_get_horario_semanal()[str(momento.date().weekday())]
+    if not turno:
+        return "entrada"  # dia no laboral: no hay jornada de referencia
+    return "entrada" if momento.strftime("%H:%M") < _punto_medio(turno["entrada"], turno["salida"]) else "salida"
 
 
 # Ventana anti-rebote: /checkin dispara el registro en cada carga de la pagina,
@@ -387,21 +415,37 @@ def _jornadas_por_dia(registros):
         d = dias.setdefault(key, {
             "nombre": r.get("nombre", ""),
             "departamento": r.get("departamento", ""),
-            "pares": [], "pendiente": None,
+            "pares": [], "pendiente": None, "marcas": 0,
             "primera_entrada": None, "ultima_salida": None,
+            "entradas_sin_salida": 0, "salidas_sin_entrada": 0,
         })
+        d["marcas"] += 1
         if r["tipo"] == "entrada":
-            if d["pendiente"] is None:
-                d["pendiente"] = dt
+            if d["pendiente"] is not None:
+                # Dos entradas seguidas: a la anterior le falto su salida.
+                d["entradas_sin_salida"] += 1
+            d["pendiente"] = dt
             if d["primera_entrada"] is None:
                 d["primera_entrada"] = dt
-        elif r["tipo"] == "salida" and d["pendiente"] is not None:
-            d["pares"].append((d["pendiente"], dt))
-            d["pendiente"] = None
+        elif r["tipo"] == "salida":
+            if d["pendiente"] is not None:
+                d["pares"].append((d["pendiente"], dt))
+                d["pendiente"] = None
+            else:
+                # Salida sin entrada previa: antes se descartaba en silencio.
+                d["salidas_sin_entrada"] += 1
             d["ultima_salida"] = dt
+
     for d in dias.values():
-        # Entrada sin su salida: el dia queda incompleto y no se puede validar.
-        d["incompleto"] = d.pop("pendiente") is not None
+        if d.pop("pendiente") is not None:
+            d["entradas_sin_salida"] += 1
+        d["incompleto"] = bool(d["entradas_sin_salida"] or d["salidas_sin_entrada"])
+        faltantes = []
+        if d["entradas_sin_salida"]:
+            faltantes.append("Falta salida")
+        if d["salidas_sin_entrada"]:
+            faltantes.append("Falta entrada")
+        d["motivo"] = " y ".join(faltantes)
     return dias
 
 
@@ -475,6 +519,8 @@ def db_resumen_periodo(desde, hasta, emp_id=None, departamento=None):
             "extra_horas": round(extra / 60, 2),
             "no_laboral": turno is None,
             "incompleto": d["incompleto"],
+            "motivo": d["motivo"],
+            "marcas": d["marcas"],
         })
 
     resumen = {}
@@ -519,9 +565,7 @@ def db_listar_areas():
 
 
 def _minutos_entre(hhmm_ini, hhmm_fin):
-    hi, mi = map(int, hhmm_ini.split(":"))
-    hf, mf = map(int, hhmm_fin.split(":"))
-    return (hf * 60 + mf) - (hi * 60 + mi)
+    return _minutos_del_dia(hhmm_fin) - _minutos_del_dia(hhmm_ini)
 
 
 def db_retardos(desde, hasta, departamento=None):
@@ -573,6 +617,63 @@ def db_retardos(desde, hasta, departamento=None):
             "con_tolerancia": hora_reg <= lim,
         })
     return retardos
+
+
+# ------------------------------------------------------------
+# CORRECCION MANUAL DE REGISTROS
+# Un olvido al marcar deja el dia sin cerrar y contamina horas y retardos.
+# Estas funciones permiten al admin agregar la marca que falta o arreglar
+# una mal clasificada, sin tocar la base a mano.
+# ------------------------------------------------------------
+
+def _fecha_hora_utc(fecha, hora):
+    """(YYYY-MM-DD, HH:MM) local -> timestamp UTC para guardar en Supabase."""
+    hhmmss = hora if len(hora) > 5 else f"{hora}:00"
+    dt = datetime.fromisoformat(f"{fecha}T{hhmmss}").replace(tzinfo=LOCAL_TZ)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def db_crear_registro(emp_id, fecha, hora, tipo):
+    filas = _sb_post("registros", {
+        "empleado_id": emp_id, "tipo": tipo,
+        "fecha_hora": _fecha_hora_utc(fecha, hora),
+        "token_usado": "correccion-manual",
+    })
+    return filas[0] if filas else None
+
+
+def db_actualizar_registro(reg_id, fecha=None, hora=None, tipo=None):
+    campos = {}
+    if tipo:
+        campos["tipo"] = tipo
+    if fecha and hora:
+        campos["fecha_hora"] = _fecha_hora_utc(fecha, hora)
+    if campos:
+        _sb_patch("registros", campos, [("id", f"eq.{reg_id}")])
+
+
+def db_eliminar_registro(reg_id):
+    _sb_delete("registros", [("id", f"eq.{reg_id}")])
+
+
+def db_dias_por_corregir(desde, hasta, emp_id=None):
+    """Dias con marcas faltantes, listos para que el admin los arregle."""
+    dias = _jornadas_por_dia(db_registros_rango(desde, hasta, emp_id))
+    pendientes = []
+    for (eid, fecha), d in dias.items():
+        if not d["incompleto"]:
+            continue
+        fecha_d = date.fromisoformat(fecha)
+        pendientes.append({
+            "empleado_id": eid, "nombre": d["nombre"],
+            "departamento": d["departamento"] or SIN_AREA,
+            "fecha": fecha, "fecha_fmt": fecha_d.strftime("%d/%m/%Y"),
+            "dia": DIAS_SEMANA[fecha_d.weekday()],
+            "motivo": d["motivo"], "marcas": d["marcas"],
+            "primera_entrada": d["primera_entrada"].strftime("%H:%M") if d["primera_entrada"] else "",
+            "ultima_salida": d["ultima_salida"].strftime("%H:%M") if d["ultima_salida"] else "",
+        })
+    return sorted(pendientes, key=lambda p: (p["departamento"], p["nombre"], p["fecha"]))
 
 
 def db_limpiar_registros():
@@ -955,6 +1056,87 @@ def api_admin_save_config():
     return jsonify({"ok": True, "mensaje": "Configuracion guardada."})
 
 
+# --- CORRECCION DE REGISTROS ---
+TIPOS_VALIDOS = ("entrada", "salida")
+
+
+def _valida_registro(data):
+    """Devuelve (fecha, hora, tipo) o (None, mensaje de error)."""
+    fecha = (data.get("fecha") or "").strip()
+    hora = (data.get("hora") or "").strip()
+    tipo = (data.get("tipo") or "").strip().lower()
+    if tipo not in TIPOS_VALIDOS:
+        return None, "El tipo debe ser entrada o salida."
+    try:
+        date.fromisoformat(fecha)
+    except ValueError:
+        return None, "Fecha invalida."
+    if not _hhmm_valido(hora):
+        return None, "Hora invalida."
+    return (fecha, hora, tipo), None
+
+
+@app.route("/api/admin/registros")
+@admin_required
+def api_admin_registros():
+    desde = request.args.get("desde") or today_local().isoformat()
+    hasta = request.args.get("hasta") or desde
+    eid = request.args.get("empleado_id")
+    regs = db_registros_rango(desde, hasta, int(eid) if eid else None)
+    for r in regs:
+        loc = datetime.fromisoformat(r["fecha_hora"])
+        r["fecha_dia"] = loc.strftime("%Y-%m-%d")
+        r["hora_corta"] = loc.strftime("%H:%M")
+    return jsonify({"registros": regs, "desde": desde, "hasta": hasta})
+
+
+@app.route("/api/admin/dias-por-corregir")
+@admin_required
+def api_admin_dias_por_corregir():
+    desde, hasta = _rango_args()
+    eid = request.args.get("empleado_id")
+    return jsonify({
+        "dias": db_dias_por_corregir(desde, hasta, int(eid) if eid else None),
+        "desde": desde, "hasta": hasta,
+    })
+
+
+@app.route("/api/admin/registros", methods=["POST"])
+@admin_required
+def api_admin_crear_registro():
+    data = request.get_json() or {}
+    try:
+        emp_id = int(data.get("empleado_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "mensaje": "Selecciona un empleado."}), 400
+    if not db_obtener_empleado(emp_id):
+        return jsonify({"ok": False, "mensaje": "Empleado no encontrado."}), 404
+    valores, error = _valida_registro(data)
+    if error:
+        return jsonify({"ok": False, "mensaje": error}), 400
+    db_crear_registro(emp_id, *valores)
+    return jsonify({"ok": True, "mensaje": "Registro agregado."})
+
+
+@app.route("/api/admin/registros/<int:reg_id>", methods=["PUT"])
+@admin_required
+def api_admin_editar_registro(reg_id):
+    data = request.get_json() or {}
+    valores, error = _valida_registro(data)
+    if error:
+        return jsonify({"ok": False, "mensaje": error}), 400
+    fecha, hora, tipo = valores
+    db_actualizar_registro(reg_id, fecha, hora, tipo)
+    return jsonify({"ok": True, "mensaje": "Registro actualizado."})
+
+
+@app.route("/api/admin/registros/<int:reg_id>", methods=["DELETE"])
+@admin_required
+def api_admin_eliminar_registro(reg_id):
+    db_eliminar_registro(reg_id)
+    return jsonify({"ok": True, "mensaje": "Registro eliminado."})
+
+
 @app.route("/api/admin/limpiar-registros", methods=["POST"])
 @admin_required
 def api_admin_limpiar_reg():
@@ -1141,7 +1323,7 @@ def api_exportar_excel():
         if d["no_laboral"]:
             notas.append("Dia no laboral")
         if d["incompleto"]:
-            notas.append("Falta marcar salida")
+            notas.append(d["motivo"])
         return " / ".join(notas)
 
     detalle_ext = [d for d in periodo["detalle"] if d["extra_bruto_min"] > 0 or d["incompleto"]]

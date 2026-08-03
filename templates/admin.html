@@ -28,6 +28,10 @@ tr.inactive td { color: var(--gris); }
 }
 .horario-table input[type=time]:disabled { background: var(--gris-bg); color: var(--gris); }
 .horario-table .dia { font-weight: 600; width: 110px; }
+.badge-falta { background: var(--rojo-light); color: var(--rojo); border: 1px solid var(--rojo-border); }
+.badge-manual { background: var(--naranja-light); color: var(--naranja); border: 1px solid var(--naranja-border); }
+.toolbar .input-group input, .toolbar .input-group select { padding: 6px 10px; font-size: 13px; width: auto; }
+.toolbar .input-group label { font-size: 11px; }
 @media (max-width: 768px) {
     .config-grid { grid-template-columns: 1fr; }
     .toolbar { gap: 4px; }
@@ -45,6 +49,7 @@ tr.inactive td { color: var(--gris); }
 
 <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('empleados')">Empleados</button>
+    <button class="tab-btn" onclick="switchTab('registros')">Corregir Registros</button>
     <button class="tab-btn" onclick="switchTab('config')">Configuracion</button>
 </div>
 
@@ -74,6 +79,78 @@ tr.inactive td { color: var(--gris); }
                 </thead>
                 <tbody id="emp-body">
                     <tr><td colspan="7" style="text-align:center;color:var(--gris);padding:40px;">Cargando...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- REGISTROS TAB -->
+<div id="tab-registros" class="tab-content">
+    <div class="card" style="margin-bottom:20px;">
+        <div class="toolbar">
+            <div class="input-group" style="margin-bottom:0;">
+                <label>Desde</label>
+                <input type="date" id="reg-desde">
+            </div>
+            <div class="input-group" style="margin-bottom:0;">
+                <label>Hasta</label>
+                <input type="date" id="reg-hasta">
+            </div>
+            <div class="input-group" style="margin-bottom:0;">
+                <label>Empleado</label>
+                <select id="reg-empleado"><option value="">-- Todos --</option></select>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="loadPendientes()" style="align-self:flex-end;">Buscar dias por corregir</button>
+        </div>
+        <div class="card-body">
+            <h3 class="section-title">Dias por corregir</h3>
+            <p class="section-help">
+                Dias en que falta una marca. Mientras no se corrijan, esas horas no
+                se cuentan y pueden generar retardos falsos. Pulsa Corregir para ver
+                y editar las marcas de ese dia.
+            </p>
+            <div class="emp-table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Empleado</th>
+                            <th>Area</th>
+                            <th>Fecha</th>
+                            <th>Dia</th>
+                            <th>Marcas</th>
+                            <th>Problema</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pend-body">
+                        <tr><td colspan="7" style="text-align:center;color:var(--gris);padding:30px;">Elige un rango y pulsa Buscar</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <span id="reg-titulo" style="font-weight:600;align-self:center;">Marcas del periodo</span>
+            <button class="btn btn-primary btn-sm" onclick="showNewRegistro()" style="margin-left:auto;">+ Agregar marca</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadRegistros()">Actualizar</button>
+        </div>
+        <div class="emp-table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Hora</th>
+                        <th>Empleado</th>
+                        <th>Tipo</th>
+                        <th>Origen</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="reg-body">
+                    <tr><td colspan="6" style="text-align:center;color:var(--gris);padding:30px;">Elige un rango y pulsa Buscar</td></tr>
                 </tbody>
             </table>
         </div>
@@ -180,6 +257,39 @@ tr.inactive td { color: var(--gris); }
     </div>
 </div>
 
+<!-- REGISTRO MODAL -->
+<div id="registro-modal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="registro-modal-title">Agregar marca</h3>
+        <input type="hidden" id="registro-edit-id">
+        <div class="input-group">
+            <label>Empleado</label>
+            <select id="registro-empleado"></select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="input-group">
+                <label>Fecha</label>
+                <input type="date" id="registro-fecha">
+            </div>
+            <div class="input-group">
+                <label>Hora</label>
+                <input type="time" id="registro-hora">
+            </div>
+        </div>
+        <div class="input-group">
+            <label>Tipo</label>
+            <select id="registro-tipo">
+                <option value="entrada">Entrada</option>
+                <option value="salida">Salida</option>
+            </select>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeModal('registro-modal')">Cancelar</button>
+            <button class="btn btn-primary" onclick="saveRegistro()">Guardar</button>
+        </div>
+    </div>
+</div>
+
 <!-- QR MODAL -->
 <div id="qr-modal" class="modal-overlay">
     <div class="modal" style="text-align:center;">
@@ -221,6 +331,7 @@ async function loadEmployees() {
         tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--gris);padding:40px;">No hay empleados</td></tr>';
         return;
     }
+    fillEmployeeSelects();
     tbody.innerHTML = employees.map(e => {
         const cls = e.activo ? '' : ' class="inactive"';
         return `<tr${cls} onclick="selectRow(${e.id})" id="row-${e.id}" style="cursor:pointer;">
@@ -319,6 +430,139 @@ async function unlinkSelected() {
     loadEmployees();
 }
 
+// --- CORRECCION DE REGISTROS ---
+function setDefaultRegDates() {
+    const hoy = new Date();
+    const primero = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    document.getElementById('reg-desde').value = primero.toISOString().split('T')[0];
+    document.getElementById('reg-hasta').value = hoy.toISOString().split('T')[0];
+}
+
+function fillEmployeeSelects() {
+    const activos = employees.filter(e => e.activo);
+    const opciones = activos.map(e => `<option value="${e.id}">${e.nombre}</option>`).join('');
+    document.getElementById('reg-empleado').innerHTML = '<option value="">-- Todos --</option>' + opciones;
+    document.getElementById('registro-empleado').innerHTML = opciones;
+}
+
+function regFiltros() {
+    const desde = document.getElementById('reg-desde').value;
+    const hasta = document.getElementById('reg-hasta').value;
+    const emp = document.getElementById('reg-empleado').value;
+    let qs = `desde=${desde}&hasta=${hasta}`;
+    if (emp) qs += `&empleado_id=${emp}`;
+    return qs;
+}
+
+async function loadPendientes() {
+    const resp = await fetch(`/api/admin/dias-por-corregir?${regFiltros()}`);
+    const data = await resp.json();
+    const tbody = document.getElementById('pend-body');
+    if (!data.dias || data.dias.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--verde);padding:30px;">Sin dias por corregir en este rango</td></tr>';
+    } else {
+        tbody.innerHTML = data.dias.map(d => `<tr>
+            <td>${d.nombre}</td>
+            <td>${d.departamento}</td>
+            <td>${d.fecha_fmt}</td>
+            <td>${d.dia}</td>
+            <td>${d.marcas}</td>
+            <td><span class="badge badge-falta">${d.motivo}</span></td>
+            <td><button class="btn btn-secondary btn-sm" onclick="corregirDia(${d.empleado_id}, '${d.fecha}')">Corregir</button></td>
+        </tr>`).join('');
+    }
+    loadRegistros();
+}
+
+// Enfoca el editor en un dia concreto y precarga el modal con ese contexto.
+function corregirDia(empId, fecha) {
+    document.getElementById('reg-desde').value = fecha;
+    document.getElementById('reg-hasta').value = fecha;
+    document.getElementById('reg-empleado').value = String(empId);
+    loadRegistros();
+    document.getElementById('reg-titulo').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+async function loadRegistros() {
+    const resp = await fetch(`/api/admin/registros?${regFiltros()}`);
+    const data = await resp.json();
+    document.getElementById('reg-titulo').textContent =
+        `Marcas del ${data.desde} al ${data.hasta} (${data.registros.length})`;
+    const tbody = document.getElementById('reg-body');
+    if (data.registros.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--gris);padding:30px;">Sin marcas en este rango</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.registros.map(r => {
+        const cls = r.tipo === 'entrada' ? 'badge-entrada' : 'badge-salida';
+        const manual = r.token_usado === 'correccion-manual';
+        return `<tr>
+            <td>${r.fecha}</td>
+            <td>${r.hora_corta}</td>
+            <td>${r.nombre}</td>
+            <td><span class="badge ${cls}">${r.tipo.toUpperCase()}</span></td>
+            <td>${manual ? '<span class="badge badge-manual">Manual</span>' : '<span style="color:var(--gris);">Escaneo</span>'}</td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-secondary btn-sm" onclick="editRegistro(${r.id}, ${r.empleado_id}, '${r.fecha_dia}', '${r.hora_corta}', '${r.tipo}')">Editar</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteRegistro(${r.id})">Eliminar</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function showNewRegistro() {
+    if (employees.length === 0) { showAlert('Primero carga los empleados.'); return; }
+    document.getElementById('registro-modal-title').textContent = 'Agregar marca';
+    document.getElementById('registro-edit-id').value = '';
+    document.getElementById('registro-empleado').value =
+        document.getElementById('reg-empleado').value || '';
+    document.getElementById('registro-fecha').value = document.getElementById('reg-desde').value;
+    document.getElementById('registro-hora').value = '07:00';
+    document.getElementById('registro-tipo').value = 'entrada';
+    document.getElementById('registro-modal').classList.add('show');
+}
+
+function editRegistro(id, empId, fecha, hora, tipo) {
+    document.getElementById('registro-modal-title').textContent = 'Editar marca';
+    document.getElementById('registro-edit-id').value = id;
+    document.getElementById('registro-empleado').value = String(empId);
+    document.getElementById('registro-fecha').value = fecha;
+    document.getElementById('registro-hora').value = hora;
+    document.getElementById('registro-tipo').value = tipo;
+    document.getElementById('registro-modal').classList.add('show');
+}
+
+async function saveRegistro() {
+    const id = document.getElementById('registro-edit-id').value;
+    const body = {
+        empleado_id: document.getElementById('registro-empleado').value,
+        fecha: document.getElementById('registro-fecha').value,
+        hora: document.getElementById('registro-hora').value,
+        tipo: document.getElementById('registro-tipo').value,
+    };
+    const url = id ? `/api/admin/registros/${id}` : '/api/admin/registros';
+    const resp = await fetch(url, {
+        method: id ? 'PUT' : 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+        closeModal('registro-modal');
+        loadPendientes();
+    } else {
+        showAlert(data.mensaje);
+    }
+}
+
+async function deleteRegistro(id) {
+    if (!confirm('Eliminar esta marca? No se puede deshacer.')) return;
+    const resp = await fetch(`/api/admin/registros/${id}`, {method: 'DELETE'});
+    const data = await resp.json();
+    if (!data.ok) { showAlert(data.mensaje); return; }
+    loadPendientes();
+}
+
 // --- CONFIG ---
 function renderHorario(dias, horario) {
     document.getElementById('horario-body').innerHTML = dias.map((nombre, i) => {
@@ -404,6 +648,7 @@ async function cleanAll() {
     loadEmployees();
 }
 
+setDefaultRegDates();
 loadEmployees();
 loadConfig();
 </script>
