@@ -228,11 +228,14 @@
                 if (data.ok) {
                     const badgeClass = data.tipo === "entrada" ? "badge-entrada" : "badge-salida";
                     resultadoEl.className = "status-box status-success";
+                    // La hora la manda el servidor (UTC-5). No usar new Date():
+                    // depende de la zona horaria configurada en el celular.
                     resultadoEl.innerHTML = `
                         <div class="icon">${data.tipo === "entrada" ? "&#9989;" : "&#128682;"}</div>
                         <p class="nombre">${data.nombre}</p>
                         <span class="badge ${badgeClass}">${data.tipo.toUpperCase()}</span>
-                        <p class="hora">${new Date().toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</p>
+                        <p class="hora">${data.hora || ''}</p>
+                        ${data.duplicado ? '<span class="hint">Ya estaba registrado. No se creo un registro nuevo.</span>' : ''}
                     `;
                 } else {
                     resultadoEl.className = "status-box status-error";

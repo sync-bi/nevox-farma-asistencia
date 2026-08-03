@@ -15,6 +15,19 @@
 .danger-btns { display: flex; gap: 8px; }
 .qr-modal-img { display: block; margin: 16px auto; border: 1px solid var(--gris-border); border-radius: 8px; padding: 8px; background: #fff; }
 tr.inactive td { color: var(--gris); }
+.section-title { font-size: 15px; color: var(--negro); margin-bottom: 4px; }
+.section-help { font-size: 12px; color: var(--texto-sec); margin-bottom: 12px; }
+.horario-table { max-width: 520px; border: 1px solid var(--gris-border); border-radius: 8px; overflow: hidden; }
+.horario-table td { padding: 6px 12px; }
+.horario-table input[type=time] {
+    padding: 6px 10px;
+    border: 1px solid var(--gris-border);
+    border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+}
+.horario-table input[type=time]:disabled { background: var(--gris-bg); color: var(--gris); }
+.horario-table .dia { font-weight: 600; width: 110px; }
 @media (max-width: 768px) {
     .config-grid { grid-template-columns: 1fr; }
     .toolbar { gap: 4px; }
@@ -79,6 +92,36 @@ tr.inactive td { color: var(--gris); }
                 <div class="input-group">
                     <label>Tolerancia de retardo (min)</label>
                     <input type="number" id="cfg-tolerancia" min="0">
+                </div>
+                <div class="full-width separator"></div>
+                <div class="full-width">
+                    <h3 class="section-title">Horario semanal</h3>
+                    <p class="section-help">
+                        Jornada oficial de la empresa. Todo lo trabajado despues de la hora
+                        de salida cuenta como hora extra. Un dia sin marcar como laboral
+                        (sabado / domingo) suma como extra todo el tiempo trabajado.
+                    </p>
+                    <table class="horario-table">
+                        <tbody id="horario-body"></tbody>
+                    </table>
+                </div>
+                <div class="input-group">
+                    <label>Minimo para contar hora extra (min)</label>
+                    <input type="number" id="cfg-ext-min" min="0">
+                </div>
+                <div class="input-group">
+                    <label>Redondeo de hora extra (min)</label>
+                    <input type="number" id="cfg-ext-redondeo" min="0">
+                </div>
+                <div class="input-group full-width">
+                    <label>Anti-rebote de check-in (segundos)</label>
+                    <input type="number" id="cfg-antirrebote" min="0">
+                    <p class="section-help" style="margin-top:6px;margin-bottom:0;">
+                        Si el mismo empleado vuelve a escanear dentro de esta ventana no se
+                        crea un registro nuevo: se le repite el anterior. Evita que una
+                        recarga o un doble escaneo marque la salida junto con la entrada.
+                        Con 0 se desactiva.
+                    </p>
                 </div>
                 <div class="full-width separator"></div>
                 <div class="input-group">
@@ -277,17 +320,60 @@ async function unlinkSelected() {
 }
 
 // --- CONFIG ---
+function renderHorario(dias, horario) {
+    document.getElementById('horario-body').innerHTML = dias.map((nombre, i) => {
+        const t = horario[String(i)];
+        const on = t ? 'checked' : '';
+        const dis = t ? '' : 'disabled';
+        return `<tr>
+            <td class="dia">${nombre}</td>
+            <td><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--texto-sec);">
+                <input type="checkbox" id="hs-on-${i}" ${on} onchange="toggleDia(${i})"> Laboral
+            </label></td>
+            <td><input type="time" id="hs-ent-${i}" value="${t ? t.entrada : '07:00'}" ${dis}></td>
+            <td><input type="time" id="hs-sal-${i}" value="${t ? t.salida : '16:00'}" ${dis}></td>
+        </tr>`;
+    }).join('');
+}
+
+function toggleDia(i) {
+    const on = document.getElementById('hs-on-' + i).checked;
+    document.getElementById('hs-ent-' + i).disabled = !on;
+    document.getElementById('hs-sal-' + i).disabled = !on;
+}
+
+function readHorario() {
+    const horario = {};
+    for (let i = 0; i < 7; i++) {
+        horario[String(i)] = document.getElementById('hs-on-' + i).checked
+            ? {
+                entrada: document.getElementById('hs-ent-' + i).value,
+                salida: document.getElementById('hs-sal-' + i).value,
+              }
+            : null;
+    }
+    return horario;
+}
+
 async function loadConfig() {
     const resp = await fetch('/api/admin/config');
     const data = await resp.json();
     document.getElementById('cfg-empresa').value = data.nombre_empresa;
     document.getElementById('cfg-tolerancia').value = data.tolerancia_minutos;
+    document.getElementById('cfg-ext-min').value = data.extras_minimo_minutos;
+    document.getElementById('cfg-ext-redondeo').value = data.extras_redondeo_minutos;
+    document.getElementById('cfg-antirrebote').value = data.checkin_antirrebote_segundos;
+    renderHorario(data.dias_semana, data.horario_semanal);
 }
 
 async function saveConfig() {
     const body = {
         nombre_empresa: document.getElementById('cfg-empresa').value,
         tolerancia_minutos: document.getElementById('cfg-tolerancia').value,
+        extras_minimo_minutos: document.getElementById('cfg-ext-min').value,
+        extras_redondeo_minutos: document.getElementById('cfg-ext-redondeo').value,
+        checkin_antirrebote_segundos: document.getElementById('cfg-antirrebote').value,
+        horario_semanal: readHorario(),
     };
     const pass = document.getElementById('cfg-pass').value;
     if (pass) {

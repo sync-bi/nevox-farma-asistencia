@@ -25,9 +25,70 @@
 .report-table { max-height: 450px; overflow-y: auto; }
 .badge-retardo { background: var(--rojo-light); color: var(--rojo); border: 1px solid var(--rojo-border); }
 .badge-tolerancia { background: var(--salida-light); color: var(--salida); border: 1px solid var(--salida-border); }
+.badge-extra { background: var(--verde-light); color: var(--verde); border: 1px solid var(--verde-border); }
+.badge-finde { background: var(--naranja-light); color: var(--naranja); border: 1px solid var(--naranja-border); }
 .empty-msg { text-align: center; color: var(--gris); padding: 40px; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.muted { color: var(--gris); }
+.check-inline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--texto-sec); padding-bottom: 8px; }
+.check-inline input { width: auto; }
+
+/* Agrupacion por area */
+tr.row-area td {
+    background: var(--naranja-light);
+    color: var(--naranja);
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-top: 1px solid var(--naranja-border);
+    border-bottom: 1px solid var(--naranja-border);
+}
+tr.row-area:hover td { background: var(--naranja-light); }
+tr.row-sub td { background: #f0f0f2; font-weight: 700; }
+tr.row-sub:hover td { background: #f0f0f2; }
+
+/* Retardo fuera de tolerancia */
+tr.row-tarde td { background: var(--rojo-light); }
+tr.row-tarde:hover td { background: #fde8e8; }
+.txt-rojo { color: var(--rojo); font-weight: 700; }
+
+.summary-bar {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--gris-border);
+    font-size: 13px;
+    color: var(--texto-sec);
+}
+.summary-bar b { display: block; font-size: 20px; font-weight: 700; color: var(--negro); }
+.rules-note { padding: 10px 20px; font-size: 12px; color: var(--texto-sec); background: var(--naranja-light); border-bottom: 1px solid var(--naranja-border); }
+
+.print-only { display: none; }
+
 @media (max-width: 768px) {
     .filter-bar { flex-direction: column; align-items: stretch; }
+    .report-table { overflow-x: auto; }
+}
+
+/* Vista de impresion: solo la pestana activa, sin controles */
+@media print {
+    .brand-strip, .nav-bar, .tabs, .filter-bar, .btn, .check-inline,
+    .reports-header { display: none !important; }
+    .print-only { display: block !important; }
+    body { background: #fff; }
+    .main-content { padding: 0; max-width: none; }
+    .card { border: none; box-shadow: none; border-radius: 0; }
+    .report-table { max-height: none; overflow: visible; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    .print-head { margin-bottom: 14px; }
+    .print-head h2 { font-size: 17px; color: #000; }
+    .print-head p { font-size: 12px; color: #444; margin-top: 3px; }
+    .summary-bar, .rules-note { border: 1px solid #ddd; }
+    /* Los fondos de color deben salir tambien en papel */
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 {% endblock %}
 
@@ -38,6 +99,7 @@
 
 <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('horas', this)">Horas Trabajadas</button>
+    <button class="tab-btn" onclick="switchTab('extras', this)">Horas Extras</button>
     <button class="tab-btn" onclick="switchTab('retardos', this)">Retardos</button>
     <button class="tab-btn" onclick="switchTab('export', this)">Exportar a Excel</button>
 </div>
@@ -54,19 +116,86 @@
                 <label>Hasta</label>
                 <input type="date" id="horas-hasta">
             </div>
+            <div class="input-group">
+                <label>Area</label>
+                <select id="horas-area" class="sel-area">
+                    <option value="">-- Todas --</option>
+                </select>
+            </div>
             <button class="btn btn-primary btn-sm" onclick="queryHours()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
         </div>
+        <div id="horas-print" class="print-only print-head"></div>
         <div class="report-table">
             <table>
                 <thead>
                     <tr>
                         <th>Empleado</th>
-                        <th>Departamento</th>
-                        <th>Horas Trabajadas</th>
+                        <th class="num">Horas Trabajadas</th>
+                        <th class="num">Horas Extras</th>
+                        <th class="num">Dias con Extra</th>
                     </tr>
                 </thead>
                 <tbody id="horas-body">
-                    <tr><td colspan="3" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
+                    <tr><td colspan="4" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- HORAS EXTRAS TAB -->
+<div id="tab-extras" class="tab-content">
+    <div class="card">
+        <div class="filter-bar">
+            <div class="input-group">
+                <label>Desde</label>
+                <input type="date" id="ext-desde">
+            </div>
+            <div class="input-group">
+                <label>Hasta</label>
+                <input type="date" id="ext-hasta">
+            </div>
+            <div class="input-group">
+                <label>Area</label>
+                <select id="ext-area" class="sel-area">
+                    <option value="">-- Todas --</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label>Empleado</label>
+                <select id="ext-empleado">
+                    <option value="">-- Todos --</option>
+                </select>
+            </div>
+            <label class="check-inline">
+                <input type="checkbox" id="ext-solo" checked>
+                Solo dias con hora extra
+            </label>
+            <button class="btn btn-primary btn-sm" onclick="queryOvertime()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
+        </div>
+        <div id="ext-print" class="print-only print-head"></div>
+        <div id="ext-rules" class="rules-note" style="display:none;"></div>
+        <div id="ext-summary" class="summary-bar" style="display:none;"></div>
+        <div class="report-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Empleado</th>
+                        <th>Fecha</th>
+                        <th>Dia</th>
+                        <th>Entrada</th>
+                        <th>Salida</th>
+                        <th>Salida Prog.</th>
+                        <th class="num">Trabajadas</th>
+                        <th class="num">Extra Registrada</th>
+                        <th class="num">Extra Validada</th>
+                        <th>Observacion</th>
+                    </tr>
+                </thead>
+                <tbody id="ext-body">
+                    <tr><td colspan="10" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
                 </tbody>
             </table>
         </div>
@@ -85,22 +214,32 @@
                 <label>Hasta</label>
                 <input type="date" id="ret-hasta">
             </div>
+            <div class="input-group">
+                <label>Area</label>
+                <select id="ret-area" class="sel-area">
+                    <option value="">-- Todas --</option>
+                </select>
+            </div>
             <button class="btn btn-primary btn-sm" onclick="queryTardiness()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
         </div>
+        <div id="ret-print" class="print-only print-head"></div>
+        <div id="ret-rules" class="rules-note" style="display:none;"></div>
         <div class="report-table">
             <table>
                 <thead>
                     <tr>
                         <th>Empleado</th>
-                        <th>Departamento</th>
                         <th>Fecha</th>
+                        <th>Dia</th>
                         <th>H. Programada</th>
                         <th>H. Registro</th>
+                        <th class="num">Min. Tarde</th>
                         <th>Estado</th>
                     </tr>
                 </thead>
                 <tbody id="ret-body">
-                    <tr><td colspan="6" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
+                    <tr><td colspan="7" class="empty-msg">Selecciona un rango de fechas y presiona Consultar</td></tr>
                 </tbody>
             </table>
         </div>
@@ -112,6 +251,10 @@
     <div class="card">
         <div class="card-body">
             <h3 style="font-size:16px;margin-bottom:20px;color:var(--negro);">Exportar registros a archivo Excel</h3>
+            <p style="font-size:13px;color:var(--texto-sec);margin-bottom:16px;">
+                El archivo trae 4 hojas (Registros, Horas Extras, Retardos y Resumen),
+                agrupadas por area y con los retardos marcados en rojo.
+            </p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:500px;">
                 <div class="input-group">
                     <label>Desde</label>
@@ -121,7 +264,13 @@
                     <label>Hasta</label>
                     <input type="date" id="exp-hasta">
                 </div>
-                <div class="input-group" style="grid-column:1/-1;">
+                <div class="input-group">
+                    <label>Area</label>
+                    <select id="exp-area" class="sel-area">
+                        <option value="">-- Todas --</option>
+                    </select>
+                </div>
+                <div class="input-group">
                     <label>Empleado</label>
                     <select id="exp-empleado">
                         <option value="">-- Todos --</option>
@@ -149,67 +298,239 @@ function setDefaultDates() {
     const todayStr = today.toISOString().split('T')[0];
     const firstStr = firstDay.toISOString().split('T')[0];
 
-    document.getElementById('horas-desde').value = firstStr;
-    document.getElementById('horas-hasta').value = todayStr;
-    document.getElementById('ret-desde').value = firstStr;
-    document.getElementById('ret-hasta').value = todayStr;
-    document.getElementById('exp-desde').value = firstStr;
-    document.getElementById('exp-hasta').value = todayStr;
+    ['horas', 'ext', 'ret', 'exp'].forEach(p => {
+        document.getElementById(p + '-desde').value = firstStr;
+        document.getElementById(p + '-hasta').value = todayStr;
+    });
+}
+
+async function loadAreaSelects() {
+    try {
+        const resp = await fetch('/api/reportes/areas');
+        const data = await resp.json();
+        document.querySelectorAll('.sel-area').forEach(sel => {
+            data.areas.forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a;
+                opt.textContent = a;
+                sel.appendChild(opt);
+            });
+        });
+    } catch(e) {}
 }
 
 async function loadEmployeeSelect() {
     try {
         const resp = await fetch('/api/admin/empleados');
         const data = await resp.json();
-        const sel = document.getElementById('exp-empleado');
-        data.empleados.filter(e => e.activo).forEach(e => {
-            const opt = document.createElement('option');
-            opt.value = e.id;
-            opt.textContent = e.nombre;
-            sel.appendChild(opt);
+        const activos = data.empleados.filter(e => e.activo);
+        ['exp-empleado', 'ext-empleado'].forEach(id => {
+            const sel = document.getElementById(id);
+            activos.forEach(e => {
+                const opt = document.createElement('option');
+                opt.value = e.id;
+                opt.textContent = e.nombre;
+                sel.appendChild(opt);
+            });
         });
     } catch(e) {}
 }
 
+// 95 -> "1h 35m"; 0 -> "—"
+function fmtMin(min) {
+    if (!min) return '—';
+    const h = Math.floor(min / 60), m = min % 60;
+    return (h ? h + 'h ' : '') + m + 'm';
+}
+
+function fmtFecha(iso) {
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+}
+
+// Encabezado que solo se ve al imprimir
+function setPrintHead(id, titulo, desde, hasta, area) {
+    document.getElementById(id).innerHTML =
+        `<h2>NEVOX FARMA — ${titulo}</h2>
+         <p>Periodo: ${fmtFecha(desde)} al ${fmtFecha(hasta)} · Area: ${area || 'Todas'}</p>`;
+}
+
+// Inserta una fila de encabezado por area y, si se pide, un subtotal.
+function groupByArea(items, colspan, rowFn, subtotalFn) {
+    let html = '', area = null, grupo = [];
+    items.forEach(it => {
+        const a = it.departamento || 'Sin area';
+        if (a !== area) {
+            if (grupo.length && subtotalFn) html += subtotalFn(area, grupo);
+            area = a;
+            grupo = [];
+            html += `<tr class="row-area"><td colspan="${colspan}">${a}</td></tr>`;
+        }
+        grupo.push(it);
+        html += rowFn(it);
+    });
+    if (grupo.length && subtotalFn) html += subtotalFn(area, grupo);
+    return html;
+}
+
+const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+
 async function queryHours() {
     const desde = document.getElementById('horas-desde').value;
     const hasta = document.getElementById('horas-hasta').value;
+    const area = document.getElementById('horas-area').value;
     if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
-    const resp = await fetch(`/api/reportes/horas?desde=${desde}&hasta=${hasta}`);
+    let url = `/api/reportes/horas?desde=${desde}&hasta=${hasta}`;
+    if (area) url += `&departamento=${encodeURIComponent(area)}`;
+    const resp = await fetch(url);
     const data = await resp.json();
+    setPrintHead('horas-print', 'Horas trabajadas y extras', desde, hasta, area);
+
     const tbody = document.getElementById('horas-body');
     if (data.datos.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" class="empty-msg">Sin datos en este rango</td></tr>';
-    } else {
-        tbody.innerHTML = data.datos.map(r =>
-            `<tr><td>${r.nombre}</td><td>${r.departamento}</td><td>${r.horas.toFixed(2)} hrs</td></tr>`
-        ).join('');
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">Sin datos en este rango</td></tr>';
+        return;
     }
+    tbody.innerHTML = groupByArea(data.datos, 4,
+        r => {
+            const extras = r.extras_horas > 0
+                ? `<span class="badge badge-extra">${r.extras_horas.toFixed(2)} hrs</span>`
+                : '<span class="muted">—</span>';
+            return `<tr>
+                <td>${r.nombre}</td>
+                <td class="num">${r.horas.toFixed(2)} hrs</td>
+                <td class="num">${extras}</td>
+                <td class="num">${r.dias_con_extra || '—'}</td>
+            </tr>`;
+        },
+        (a, g) => `<tr class="row-sub">
+            <td>Subtotal ${a}</td>
+            <td class="num">${sum(g, x => x.horas).toFixed(2)} hrs</td>
+            <td class="num">${sum(g, x => x.extras_horas).toFixed(2)} hrs</td>
+            <td class="num">${sum(g, x => x.dias_con_extra)}</td>
+        </tr>`
+    );
+}
+
+async function queryOvertime() {
+    const desde = document.getElementById('ext-desde').value;
+    const hasta = document.getElementById('ext-hasta').value;
+    const area = document.getElementById('ext-area').value;
+    if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
+    const solo = document.getElementById('ext-solo').checked ? '1' : '0';
+    let url = `/api/reportes/horas-extras?desde=${desde}&hasta=${hasta}&solo_extras=${solo}`;
+    if (area) url += `&departamento=${encodeURIComponent(area)}`;
+    const empId = document.getElementById('ext-empleado').value;
+    if (empId) url += `&empleado_id=${empId}`;
+
+    const resp = await fetch(url);
+    const data = await resp.json();
+    setPrintHead('ext-print', 'Validacion de horas extras', desde, hasta, area);
+
+    const dias = ['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
+    const horario = dias.map((d, i) => {
+        const t = data.horario[String(i)];
+        return t ? `${d} ${t.entrada}-${t.salida}` : `${d} no laboral`;
+    }).join(' · ');
+    const rules = document.getElementById('ext-rules');
+    rules.textContent = `Horario aplicado: ${horario}. Se valida a partir de `
+        + `${data.reglas.minimo} min despues de la salida, redondeando hacia abajo `
+        + `en bloques de ${data.reglas.redondeo} min.`;
+    rules.style.display = 'block';
+
+    const totalExtras = sum(data.resumen, r => r.extras_horas);
+    const totalFinde = sum(data.resumen, r => r.extras_no_laboral_horas);
+    const incompletos = sum(data.resumen, r => r.dias_incompletos);
+    const summary = document.getElementById('ext-summary');
+    summary.innerHTML = `
+        <div>Extras validadas<b>${totalExtras.toFixed(2)} hrs</b></div>
+        <div>En dias habiles<b>${(totalExtras - totalFinde).toFixed(2)} hrs</b></div>
+        <div>En fin de semana<b>${totalFinde.toFixed(2)} hrs</b></div>
+        <div>Dias sin salida marcada<b>${incompletos}</b></div>`;
+    summary.style.display = 'flex';
+
+    const tbody = document.getElementById('ext-body');
+    if (data.detalle.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-msg">Sin horas extras en este rango</td></tr>';
+        return;
+    }
+    tbody.innerHTML = groupByArea(data.detalle, 10,
+        d => {
+            const notas = [];
+            if (d.no_laboral) notas.push('<span class="badge badge-finde">Fin de semana</span>');
+            if (d.incompleto) notas.push('<span class="badge badge-retardo">Falta salida</span>');
+            const validada = d.extra_min > 0
+                ? `<span class="badge badge-extra">${fmtMin(d.extra_min)}</span>`
+                : '<span class="muted">—</span>';
+            return `<tr>
+                <td>${d.nombre}</td>
+                <td>${d.fecha_fmt}</td>
+                <td>${d.dia}</td>
+                <td>${d.entrada || '—'}</td>
+                <td>${d.salida || '—'}</td>
+                <td>${d.salida_programada || '<span class="muted">—</span>'}</td>
+                <td class="num">${d.horas_trabajadas.toFixed(2)}</td>
+                <td class="num">${fmtMin(d.extra_bruto_min)}</td>
+                <td class="num">${validada}</td>
+                <td>${notas.join(' ')}</td>
+            </tr>`;
+        },
+        (a, g) => `<tr class="row-sub">
+            <td colspan="6">Subtotal ${a}</td>
+            <td class="num">${sum(g, x => x.horas_trabajadas).toFixed(2)}</td>
+            <td class="num">${fmtMin(sum(g, x => x.extra_bruto_min))}</td>
+            <td class="num">${fmtMin(sum(g, x => x.extra_min))}</td>
+            <td></td>
+        </tr>`
+    );
 }
 
 async function queryTardiness() {
     const desde = document.getElementById('ret-desde').value;
     const hasta = document.getElementById('ret-hasta').value;
+    const area = document.getElementById('ret-area').value;
     if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
-    const resp = await fetch(`/api/reportes/retardos?desde=${desde}&hasta=${hasta}`);
+    let url = `/api/reportes/retardos?desde=${desde}&hasta=${hasta}`;
+    if (area) url += `&departamento=${encodeURIComponent(area)}`;
+    const resp = await fetch(url);
     const data = await resp.json();
+    setPrintHead('ret-print', 'Retardos', desde, hasta, area);
+
+    const rules = document.getElementById('ret-rules');
+    rules.textContent = `Tolerancia de ${data.tolerancia} min sobre la hora de entrada `
+        + `del horario semanal. En rojo, las llegadas que exceden la tolerancia.`;
+    rules.style.display = 'block';
+
     const tbody = document.getElementById('ret-body');
     if (data.datos.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Sin retardos en este rango</td></tr>';
-    } else {
-        tbody.innerHTML = data.datos.map(r => {
-            const estado = r.con_tolerancia ? 'Dentro de tolerancia' : 'RETARDO';
-            const cls = r.con_tolerancia ? 'badge-tolerancia' : 'badge-retardo';
-            return `<tr>
-                <td>${r.nombre}</td>
-                <td>${r.departamento}</td>
-                <td>${r.fecha}</td>
-                <td>${r.hora_programada}</td>
-                <td>${r.hora_registro}</td>
-                <td><span class="badge ${cls}">${estado}</span></td>
-            </tr>`;
-        }).join('');
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Sin retardos en este rango</td></tr>';
+        return;
     }
+    const filas = data.datos.slice().sort((a, b) =>
+        (a.departamento + a.nombre + a.fecha).localeCompare(b.departamento + b.nombre + b.fecha));
+
+    tbody.innerHTML = groupByArea(filas, 7,
+        r => {
+            const tarde = !r.con_tolerancia;
+            const estado = tarde
+                ? '<span class="badge badge-retardo">RETARDO</span>'
+                : '<span class="badge badge-tolerancia">Dentro de tolerancia</span>';
+            return `<tr class="${tarde ? 'row-tarde' : ''}">
+                <td>${r.nombre}</td>
+                <td>${r.fecha_fmt}</td>
+                <td>${r.dia}</td>
+                <td>${r.hora_programada}</td>
+                <td class="${tarde ? 'txt-rojo' : ''}">${r.hora_registro}</td>
+                <td class="num ${tarde ? 'txt-rojo' : ''}">${r.minutos_tarde}</td>
+                <td>${estado}</td>
+            </tr>`;
+        },
+        (a, g) => `<tr class="row-sub">
+            <td colspan="5">Subtotal ${a}</td>
+            <td class="num">${sum(g, x => x.minutos_tarde)}</td>
+            <td>${sum(g, x => x.con_tolerancia ? 0 : 1)} retardos / ${g.length} tarde</td>
+        </tr>`
+    );
 }
 
 function exportExcel() {
@@ -217,12 +538,15 @@ function exportExcel() {
     const hasta = document.getElementById('exp-hasta').value;
     if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
     let url = `/api/reportes/exportar-excel?desde=${desde}&hasta=${hasta}`;
+    const area = document.getElementById('exp-area').value;
+    if (area) url += `&departamento=${encodeURIComponent(area)}`;
     const empId = document.getElementById('exp-empleado').value;
     if (empId) url += `&empleado_id=${empId}`;
     window.location.href = url;
 }
 
 setDefaultDates();
+loadAreaSelects();
 loadEmployeeSelect();
 </script>
 {% endblock %}

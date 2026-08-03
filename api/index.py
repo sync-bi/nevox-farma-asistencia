@@ -7,6 +7,7 @@ Archivo unico: database + QR + rutas.
 import os
 import hashlib
 import hmac
+import json
 import secrets
 import time
 import io
@@ -209,7 +210,8 @@ def db_desvincular(emp_id):
 
 
 def db_registrar_asistencia(emp_id, tipo, token_usado=None):
-    _sb_post("registros", {"empleado_id": emp_id, "tipo": tipo, "token_usado": token_usado})
+    filas = _sb_post("registros", {"empleado_id": emp_id, "tipo": tipo, "token_usado": token_usado})
+    return filas[0] if filas else None
 
 
 def db_ultimo_registro(emp_id, fecha=None):
@@ -226,6 +228,34 @@ def db_ultimo_registro(emp_id, fecha=None):
 def db_siguiente_tipo(emp_id):
     ultimo = db_ultimo_registro(emp_id)
     return "entrada" if (ultimo is None or ultimo["tipo"] == "salida") else "salida"
+
+
+# Ventana anti-rebote: /checkin dispara el registro en cada carga de la pagina,
+# asi que una recarga, el boton atras, un doble escaneo (el QR vale hasta 60s) o
+# la precarga que hacen algunas apps de camara metian un segundo registro que,
+# al alternar entrada/salida, marcaba la salida de inmediato. Dentro de esta
+# ventana se devuelve el registro anterior en vez de crear uno nuevo.
+ANTIRREBOTE_DEFAULT = 90  # segundos
+
+
+def db_get_antirrebote():
+    try:
+        v = int(db_get_config("checkin_antirrebote_segundos"))
+        return v if v >= 0 else ANTIRREBOTE_DEFAULT
+    except (TypeError, ValueError):
+        return ANTIRREBOTE_DEFAULT
+
+
+def registro_reciente(emp_id):
+    """Ultimo registro del empleado si cae dentro de la ventana anti-rebote."""
+    ventana = db_get_antirrebote()
+    if ventana <= 0:
+        return None
+    ultimo = db_ultimo_registro(emp_id)
+    if not ultimo or not ultimo.get("fecha_hora"):
+        return None
+    seg = (now_local() - to_local(ultimo["fecha_hora"])).total_seconds()
+    return ultimo if 0 <= seg < ventana else None
 
 
 def _flatten_registros(data):
@@ -265,22 +295,242 @@ def db_registros_rango(desde, hasta, emp_id=None):
     return _flatten_registros(data)
 
 
-def db_horas_trabajadas(emp_id, desde, hasta):
-    registros = db_registros_rango(desde, hasta, emp_id)
-    total = 0
-    entrada = None
+# ------------------------------------------------------------
+# HORARIO SEMANAL Y HORAS EXTRAS
+#
+# El horario vive en la tabla configuracion (clave "horario_semanal") como
+# JSON, asi no hace falta migrar el esquema de Supabase:
+#   {"0": {"entrada": "07:00", "salida": "16:00"}, ..., "6": null}
+# donde 0 = lunes ... 6 = domingo y null = dia no laboral.
+#
+# Hora extra = tiempo efectivamente trabajado DESPUES de la hora de salida
+# programada de ese dia. Se calcula sobre los pares entrada/salida reales,
+# de modo que salir a almorzar y volver no infla el resultado. Llegar antes
+# de la hora de entrada no genera extra. En un dia no laboral (sabado /
+# domingo) cuenta todo el tiempo trabajado, pero marcado aparte.
+# ------------------------------------------------------------
+
+DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+
+SIN_AREA = "Sin area"  # etiqueta para empleados sin departamento asignado
+
+# Horario "Apoyo" informado por NEVOX FARMA (28/07/2026).
+HORARIO_SEMANAL_DEFAULT = {
+    "0": {"entrada": "07:00", "salida": "16:00"},   # lunes
+    "1": {"entrada": "07:00", "salida": "16:00"},   # martes
+    "2": {"entrada": "07:00", "salida": "16:30"},   # miercoles
+    "3": {"entrada": "07:00", "salida": "16:00"},   # jueves
+    "4": {"entrada": "07:00", "salida": "16:00"},   # viernes
+    "5": None,                                      # sabado
+    "6": None,                                      # domingo
+}
+
+EXTRAS_MINIMO_DEFAULT = 15    # minutos: por debajo de esto no se cuenta extra
+EXTRAS_REDONDEO_DEFAULT = 15  # minutos: bloque de redondeo hacia abajo
+
+
+def _hhmm_valido(v):
+    try:
+        h, m = str(v).split(":")[:2]
+        return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except (ValueError, AttributeError):
+        return False
+
+
+def normalizar_horario(raw):
+    """Valida y completa un horario semanal. Devuelve claves '0'..'6', donde
+    cada valor es {'entrada','salida'} o None si el dia no es laboral."""
+    horario = {}
+    for i in range(7):
+        v = (raw or {}).get(str(i))
+        if isinstance(v, dict) and _hhmm_valido(v.get("entrada")) and _hhmm_valido(v.get("salida")):
+            horario[str(i)] = {"entrada": v["entrada"][:5], "salida": v["salida"][:5]}
+        else:
+            horario[str(i)] = None
+    return horario
+
+
+def db_get_horario_semanal():
+    raw = db_get_config("horario_semanal")
+    if not raw:
+        return normalizar_horario(HORARIO_SEMANAL_DEFAULT)
+    try:
+        return normalizar_horario(json.loads(raw))
+    except (ValueError, TypeError):
+        return normalizar_horario(HORARIO_SEMANAL_DEFAULT)
+
+
+def db_set_horario_semanal(horario):
+    db_set_config("horario_semanal", json.dumps(normalizar_horario(horario)))
+
+
+def db_get_reglas_extras():
+    def _int(clave, default):
+        try:
+            v = int(db_get_config(clave))
+            return v if v >= 0 else default
+        except (TypeError, ValueError):
+            return default
+    return {
+        "minimo": _int("extras_minimo_minutos", EXTRAS_MINIMO_DEFAULT),
+        "redondeo": _int("extras_redondeo_minutos", EXTRAS_REDONDEO_DEFAULT),
+    }
+
+
+def _jornadas_por_dia(registros):
+    """Agrupa los registros (ya en hora local, orden ascendente) en pares
+    entrada/salida por empleado y dia."""
+    dias = {}
     for r in registros:
         dt = datetime.fromisoformat(r["fecha_hora"])
+        key = (r["empleado_id"], dt.strftime("%Y-%m-%d"))
+        d = dias.setdefault(key, {
+            "nombre": r.get("nombre", ""),
+            "departamento": r.get("departamento", ""),
+            "pares": [], "pendiente": None,
+            "primera_entrada": None, "ultima_salida": None,
+        })
         if r["tipo"] == "entrada":
-            entrada = dt
-        elif r["tipo"] == "salida" and entrada:
-            total += (dt - entrada).total_seconds()
-            entrada = None
-    return round(total / 3600, 2)
+            if d["pendiente"] is None:
+                d["pendiente"] = dt
+            if d["primera_entrada"] is None:
+                d["primera_entrada"] = dt
+        elif r["tipo"] == "salida" and d["pendiente"] is not None:
+            d["pares"].append((d["pendiente"], dt))
+            d["pendiente"] = None
+            d["ultima_salida"] = dt
+    for d in dias.values():
+        # Entrada sin su salida: el dia queda incompleto y no se puede validar.
+        d["incompleto"] = d.pop("pendiente") is not None
+    return dias
 
 
-def db_retardos(desde, hasta):
+def _minutos_extra(pares, salida_prog):
+    """Minutos trabajados despues de salida_prog. Si salida_prog es None
+    (dia no laboral) cuenta todo el tiempo trabajado."""
+    total = 0.0
+    for ini, fin in pares:
+        desde = ini if salida_prog is None else max(ini, salida_prog)
+        seg = (fin - desde).total_seconds()
+        if seg > 0:
+            total += seg
+    return total / 60
+
+
+def _aplicar_reglas_extras(minutos, reglas):
+    """Aplica umbral minimo y redondeo hacia abajo. Devuelve minutos enteros."""
+    if minutos < reglas["minimo"]:
+        return 0
+    if reglas["redondeo"] > 0:
+        return (int(minutos) // reglas["redondeo"]) * reglas["redondeo"]
+    return int(minutos)
+
+
+def _resumen_vacio(emp_id, nombre, departamento):
+    return {
+        "empleado_id": emp_id, "nombre": nombre, "departamento": departamento,
+        "horas": 0.0, "extras_horas": 0.0, "extras_habil_horas": 0.0,
+        "extras_no_laboral_horas": 0.0, "dias_con_extra": 0, "dias_incompletos": 0,
+    }
+
+
+def db_resumen_periodo(desde, hasta, emp_id=None, departamento=None):
+    """Detalle diario (horas trabajadas y extras) y resumen por empleado
+    para el rango indicado. Una sola consulta a Supabase para todo."""
+    horario = db_get_horario_semanal()
+    reglas = db_get_reglas_extras()
+    dias = _jornadas_por_dia(db_registros_rango(desde, hasta, emp_id))
+    if departamento:
+        dias = {k: v for k, v in dias.items() if (v["departamento"] or SIN_AREA) == departamento}
+
+    detalle = []
+    for (eid, fecha), d in sorted(dias.items(), key=lambda kv: ((kv[1]["departamento"] or SIN_AREA), kv[1]["nombre"], kv[0][1])):
+        fecha_d = date.fromisoformat(fecha)
+        wd = fecha_d.weekday()
+        turno = horario[str(wd)]
+        salida_prog = None
+        if turno:
+            h, m = map(int, turno["salida"].split(":"))
+            salida_prog = datetime.combine(
+                fecha_d, datetime.min.time().replace(hour=h, minute=m), tzinfo=LOCAL_TZ
+            )
+
+        trabajado = sum((f - i).total_seconds() for i, f in d["pares"]) / 3600
+        bruto = _minutos_extra(d["pares"], salida_prog)
+        extra = _aplicar_reglas_extras(bruto, reglas)
+        detalle.append({
+            "empleado_id": eid,
+            "nombre": d["nombre"],
+            "departamento": d["departamento"] or SIN_AREA,
+            "fecha": fecha,
+            "fecha_fmt": fecha_d.strftime("%d/%m/%Y"),
+            "dia": DIAS_SEMANA[wd],
+            "entrada": d["primera_entrada"].strftime("%H:%M") if d["primera_entrada"] else "",
+            "salida": d["ultima_salida"].strftime("%H:%M") if d["ultima_salida"] else "",
+            "entrada_programada": turno["entrada"] if turno else "",
+            "salida_programada": turno["salida"] if turno else "",
+            "horas_trabajadas": round(trabajado, 2),
+            "extra_bruto_min": int(round(bruto)),
+            "extra_min": extra,
+            "extra_horas": round(extra / 60, 2),
+            "no_laboral": turno is None,
+            "incompleto": d["incompleto"],
+        })
+
+    resumen = {}
+    for e in db_listar_empleados():
+        if emp_id and e["id"] != emp_id:
+            continue
+        area = e["departamento"] or SIN_AREA
+        if departamento and area != departamento:
+            continue
+        resumen[e["id"]] = _resumen_vacio(e["id"], e["nombre"], area)
+    for d in detalle:
+        # Un empleado desactivado despues de trabajar igual debe aparecer.
+        r = resumen.setdefault(
+            d["empleado_id"], _resumen_vacio(d["empleado_id"], d["nombre"], d["departamento"])
+        )
+        r["horas"] += d["horas_trabajadas"]
+        r["extras_horas"] += d["extra_horas"]
+        if d["no_laboral"]:
+            r["extras_no_laboral_horas"] += d["extra_horas"]
+        else:
+            r["extras_habil_horas"] += d["extra_horas"]
+        if d["extra_min"] > 0:
+            r["dias_con_extra"] += 1
+        if d["incompleto"]:
+            r["dias_incompletos"] += 1
+
+    for r in resumen.values():
+        for k in ["horas", "extras_horas", "extras_habil_horas", "extras_no_laboral_horas"]:
+            r[k] = round(r[k], 2)
+
+    return {
+        "detalle": detalle,
+        "resumen": sorted(resumen.values(), key=lambda r: (r["departamento"], r["nombre"])),
+        "horario": horario,
+        "reglas": reglas,
+    }
+
+
+def db_listar_areas():
+    areas = {(e["departamento"] or SIN_AREA) for e in db_listar_empleados()}
+    return sorted(areas)
+
+
+def _minutos_entre(hhmm_ini, hhmm_fin):
+    hi, mi = map(int, hhmm_ini.split(":"))
+    hf, mf = map(int, hhmm_fin.split(":"))
+    return (hf * 60 + mf) - (hi * 60 + mi)
+
+
+def db_retardos(desde, hasta, departamento=None):
+    """Retardos del periodo. La hora de entrada sale del horario semanal
+    (misma fuente que las horas extras), no de empleados.hora_entrada."""
     emp_map = {e["id"]: e for e in db_listar_empleados()}
+    horario = db_get_horario_semanal()
+    tol = int(db_get_config("tolerancia_minutos") or "15")
+
     # Primera ENTRADA (hora local) por empleado y dia, calculada a partir de
     # los registros ya convertidos a UTC-5. Asi la comparacion con la hora
     # programada (que es local) es correcta.
@@ -294,22 +544,34 @@ def db_retardos(desde, hasta):
         if key not in primeras or hhmm < primeras[key]:
             primeras[key] = hhmm
 
-    tol = int(db_get_config("tolerancia_minutos") or "15")
     retardos = []
     for (emp_id, fecha), hora_reg in sorted(primeras.items()):
         emp = emp_map.get(emp_id)
         if not emp:
             continue
-        hora_limite = emp["hora_entrada"]
-        if hora_reg > hora_limite:
-            h, m = map(int, hora_limite.split(":"))
-            lim = (datetime.combine(date.today(), datetime.min.time().replace(hour=h, minute=m)) + timedelta(minutes=tol)).strftime("%H:%M")
-            retardos.append({
-                "empleado_id": emp_id, "nombre": emp["nombre"],
-                "departamento": emp["departamento"], "fecha": fecha,
-                "hora_programada": hora_limite, "hora_registro": hora_reg,
-                "con_tolerancia": hora_reg <= lim,
-            })
+        if departamento and emp["departamento"] != departamento:
+            continue
+        fecha_d = date.fromisoformat(fecha)
+        turno = horario[str(fecha_d.weekday())]
+        if not turno:
+            continue  # dia no laboral: trabajar ahi no es un retardo
+        hora_limite = turno["entrada"]
+        if hora_reg <= hora_limite:
+            continue
+        h, m = map(int, hora_limite.split(":"))
+        lim = (
+            datetime.combine(fecha_d, datetime.min.time().replace(hour=h, minute=m))
+            + timedelta(minutes=tol)
+        ).strftime("%H:%M")
+        retardos.append({
+            "empleado_id": emp_id, "nombre": emp["nombre"],
+            "departamento": emp["departamento"] or "Sin area",
+            "fecha": fecha, "fecha_fmt": fecha_d.strftime("%d/%m/%Y"),
+            "dia": DIAS_SEMANA[fecha_d.weekday()],
+            "hora_programada": hora_limite, "hora_registro": hora_reg,
+            "minutos_tarde": _minutos_entre(hora_limite, hora_reg),
+            "con_tolerancia": hora_reg <= lim,
+        })
     return retardos
 
 
@@ -490,9 +752,25 @@ def api_checkin():
         return jsonify({"ok": False, "mensaje": "Empleado no encontrado o inactivo."}), 400
     if emp["token_dispositivo"] != tdev:
         return jsonify({"ok": False, "mensaje": "Dispositivo no vinculado."}), 400
+
+    # Recarga / doble escaneo: no se crea un registro nuevo, se repite el anterior.
+    previo = registro_reciente(emp_id)
+    if previo:
+        hora = to_local(previo["fecha_hora"]).strftime("%H:%M:%S")
+        return jsonify({
+            "ok": True, "duplicado": True, "nombre": emp["nombre"],
+            "tipo": previo["tipo"], "hora": hora,
+            "mensaje": f"Ya habias registrado tu {previo['tipo']} a las {hora}.",
+        })
+
     tipo = db_siguiente_tipo(emp_id)
-    db_registrar_asistencia(emp_id, tipo, tqr)
-    return jsonify({"ok": True, "mensaje": f"{tipo.capitalize()} registrada.", "nombre": emp["nombre"], "tipo": tipo})
+    creado = db_registrar_asistencia(emp_id, tipo, tqr)
+    hora = to_local(creado["fecha_hora"]).strftime("%H:%M:%S") if creado and creado.get("fecha_hora") else now_local().strftime("%H:%M:%S")
+    return jsonify({
+        "ok": True, "duplicado": False, "nombre": emp["nombre"],
+        "tipo": tipo, "hora": hora,
+        "mensaje": f"{tipo.capitalize()} registrada.",
+    })
 
 
 # --- DEVICE REGISTRATION ---
@@ -619,9 +897,15 @@ def api_admin_desvincular(eid):
 @app.route("/api/admin/config", methods=["GET"])
 @admin_required
 def api_admin_get_config():
+    reglas = db_get_reglas_extras()
     return jsonify({
         "nombre_empresa": db_get_config("nombre_empresa") or "NEVOX FARMA",
         "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15",
+        "horario_semanal": db_get_horario_semanal(),
+        "dias_semana": DIAS_SEMANA,
+        "extras_minimo_minutos": reglas["minimo"],
+        "extras_redondeo_minutos": reglas["redondeo"],
+        "checkin_antirrebote_segundos": db_get_antirrebote(),
     })
 
 
@@ -641,6 +925,27 @@ def api_admin_save_config():
             db_set_config("tolerancia_minutos", str(t))
         except ValueError:
             return jsonify({"ok": False, "mensaje": "Tolerancia invalida."}), 400
+    for clave, etiqueta in [("extras_minimo_minutos", "minimo de hora extra"),
+                            ("extras_redondeo_minutos", "redondeo de hora extra"),
+                            ("checkin_antirrebote_segundos", "anti-rebote de check-in")]:
+        if clave in data:
+            try:
+                v = int(data[clave])
+                if v < 0:
+                    raise ValueError
+                db_set_config(clave, str(v))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "mensaje": f"Valor invalido para {etiqueta}."}), 400
+    if "horario_semanal" in data:
+        horario = normalizar_horario(data["horario_semanal"])
+        for i in range(7):
+            turno = horario[str(i)]
+            if turno and turno["salida"] <= turno["entrada"]:
+                return jsonify({
+                    "ok": False,
+                    "mensaje": f"{DIAS_SEMANA[i]}: la hora de salida debe ser mayor que la de entrada.",
+                }), 400
+        db_set_horario_semanal(horario)
     if data.get("nuevo_password"):
         if data["nuevo_password"] != data.get("confirmar_password"):
             return jsonify({"ok": False, "mensaje": "No coinciden."}), 400
@@ -670,20 +975,54 @@ def reportes():
     return render_template("reports.html")
 
 
+def _rango_args():
+    return (
+        request.args.get("desde", today_local().replace(day=1).isoformat()),
+        request.args.get("hasta", today_local().isoformat()),
+    )
+
+
+@app.route("/api/reportes/areas")
+def api_reportes_areas():
+    return jsonify({"areas": db_listar_areas()})
+
+
 @app.route("/api/reportes/horas")
 def api_reportes_horas():
-    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", today_local().isoformat())
-    emps = db_listar_empleados()
-    datos = [{"nombre": e["nombre"], "departamento": e["departamento"], "horas": db_horas_trabajadas(e["id"], desde, hasta)} for e in emps]
-    return jsonify({"datos": datos, "desde": desde, "hasta": hasta})
+    desde, hasta = _rango_args()
+    area = request.args.get("departamento") or None
+    data = db_resumen_periodo(desde, hasta, departamento=area)
+    return jsonify({
+        "datos": data["resumen"], "reglas": data["reglas"],
+        "desde": desde, "hasta": hasta,
+    })
+
+
+@app.route("/api/reportes/horas-extras")
+def api_reportes_horas_extras():
+    desde, hasta = _rango_args()
+    eid = request.args.get("empleado_id")
+    area = request.args.get("departamento") or None
+    data = db_resumen_periodo(desde, hasta, int(eid) if eid else None, area)
+    detalle = data["detalle"]
+    if request.args.get("solo_extras", "1") == "1":
+        detalle = [d for d in detalle if d["extra_min"] > 0 or d["incompleto"]]
+    return jsonify({
+        "detalle": detalle, "resumen": data["resumen"],
+        "horario": data["horario"], "reglas": data["reglas"],
+        "desde": desde, "hasta": hasta,
+    })
 
 
 @app.route("/api/reportes/retardos")
 def api_reportes_retardos():
-    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", today_local().isoformat())
-    return jsonify({"datos": db_retardos(desde, hasta), "desde": desde, "hasta": hasta})
+    desde, hasta = _rango_args()
+    area = request.args.get("departamento") or None
+    return jsonify({
+        "datos": db_retardos(desde, hasta, area),
+        "tolerancia": int(db_get_config("tolerancia_minutos") or "15"),
+        "desde": desde, "hasta": hasta,
+    })
 
 
 @app.route("/api/reportes/exportar-excel")
@@ -691,16 +1030,18 @@ def api_exportar_excel():
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-    desde = request.args.get("desde", today_local().replace(day=1).isoformat())
-    hasta = request.args.get("hasta", today_local().isoformat())
+    desde, hasta = _rango_args()
     eid = request.args.get("empleado_id")
     if eid:
         eid = int(eid)
+    area_filtro = request.args.get("departamento") or None
     regs = db_registros_rango(desde, hasta, eid)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Registros"
+    if area_filtro:
+        regs = [r for r in regs if (r["departamento"] or SIN_AREA) == area_filtro]
+    periodo = db_resumen_periodo(desde, hasta, eid, area_filtro)
+    retardos = db_retardos(desde, hasta, area_filtro)
+    if eid:
+        retardos = [r for r in retardos if r["empleado_id"] == eid]
 
     hf = Font(bold=True, color="FFFFFF", size=11)
     hfill = PatternFill(start_color="ea8511", end_color="ea8511", fill_type="solid")
@@ -713,32 +1054,174 @@ def api_exportar_excel():
         bottom=Side(style="thin", color="e0e0e2"),
     )
     af = PatternFill(start_color="f7f7f8", end_color="f7f7f8", fill_type="solid")
+    # Estilos por tipo de fila: cabecera de area, subtotal y retardo en rojo.
+    grupo_font = Font(bold=True, size=12, color="1d120e")
+    grupo_fill = PatternFill(start_color="fef7ed", end_color="fef7ed", fill_type="solid")
+    sub_font = Font(bold=True, color="1d120e")
+    sub_fill = PatternFill(start_color="f0f0f2", end_color="f0f0f2", fill_type="solid")
+    # ARGB explicito: es la marca que pidio el cliente, no depende del relleno
+    # de canal alfa que haga openpyxl.
+    rojo_font = Font(bold=True, color="FFDC2626")
+    rojo_fill = PatternFill(start_color="FFFEF2F2", end_color="FFFEF2F2", fill_type="solid")
 
-    ws.merge_cells("A1:E1")
-    ws["A1"] = f"NEVOX FARMA - Registros {desde} al {hasta}"
-    ws["A1"].font = tf
-
-    for col, h in enumerate(["Fecha", "Hora", "Empleado", "Departamento", "Tipo"], 1):
-        cell = ws.cell(row=3, column=col, value=h)
-        cell.font = hf
-        cell.fill = hfill
-        cell.alignment = c
-        cell.border = b
-
-    for i, r in enumerate(regs, 4):
-        dt = datetime.fromisoformat(r["fecha_hora"])
-        vals = [dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"), r["nombre"], r["departamento"], r["tipo"].upper()]
-        for col, val in enumerate(vals, 1):
-            cell = ws.cell(row=i, column=col, value=val)
+    def armar_hoja(ws, titulo, cabeceras, filas, anchos):
+        """filas: lista de dicts {"tipo": grupo|dato|alerta|subtotal, "vals": [...]}"""
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cabeceras))
+        ws.cell(row=1, column=1, value=titulo).font = tf
+        for col, h in enumerate(cabeceras, 1):
+            cell = ws.cell(row=3, column=col, value=h)
+            cell.font = hf
+            cell.fill = hfill
+            cell.alignment = c
             cell.border = b
-            if i % 2 == 0:
-                cell.fill = af
+        for i, fila in enumerate(filas, 4):
+            tipo = fila["tipo"]
+            for col in range(1, len(cabeceras) + 1):
+                val = fila["vals"][col - 1] if col <= len(fila["vals"]) else None
+                cell = ws.cell(row=i, column=col, value=val)
+                cell.border = b
+                if tipo == "grupo":
+                    cell.font = grupo_font
+                    cell.fill = grupo_fill
+                elif tipo == "subtotal":
+                    cell.font = sub_font
+                    cell.fill = sub_fill
+                elif tipo == "alerta":
+                    cell.font = rojo_font
+                    cell.fill = rojo_fill
+                elif i % 2 == 0:
+                    cell.fill = af
+            # El merge va despues de escribir: openpyxl deja de solo lectura
+            # las celdas fusionadas que no son la superior izquierda.
+            if tipo == "grupo":
+                ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=len(cabeceras))
+        ws.freeze_panes = "A4"
+        for col, ancho in enumerate(anchos, 1):
+            ws.column_dimensions[ws.cell(row=3, column=col).column_letter].width = ancho
 
-    ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 12
-    ws.column_dimensions["C"].width = 28
-    ws.column_dimensions["D"].width = 22
-    ws.column_dimensions["E"].width = 12
+    def agrupar(items, vals_fn, subtotal_fn=None, alerta_fn=None):
+        """Convierte items (ya ordenados por area) en filas con cabecera de
+        area y, opcionalmente, una fila de subtotal por area."""
+        filas, area_actual, grupo = [], None, []
+        for it in items:
+            area = it.get("departamento") or SIN_AREA
+            if area != area_actual:
+                if grupo and subtotal_fn:
+                    filas.append({"tipo": "subtotal", "vals": subtotal_fn(area_actual, grupo)})
+                area_actual, grupo = area, []
+                filas.append({"tipo": "grupo", "vals": [f"AREA: {area}"]})
+            grupo.append(it)
+            filas.append({
+                "tipo": "alerta" if (alerta_fn and alerta_fn(it)) else "dato",
+                "vals": vals_fn(it),
+            })
+        if grupo and subtotal_fn:
+            filas.append({"tipo": "subtotal", "vals": subtotal_fn(area_actual, grupo)})
+        return filas
+
+    wb = Workbook()
+
+    # --- Hoja 1: registros crudos, agrupados por area ---
+    regs_ord = sorted(regs, key=lambda r: ((r["departamento"] or SIN_AREA), r["nombre"], r["fecha_hora"]))
+    armar_hoja(
+        wb.active, f"NEVOX FARMA - Registros {desde} al {hasta}",
+        ["Fecha", "Hora", "Empleado", "Area", "Tipo"],
+        agrupar(regs_ord, lambda r: [
+            datetime.fromisoformat(r["fecha_hora"]).strftime("%Y-%m-%d"),
+            datetime.fromisoformat(r["fecha_hora"]).strftime("%H:%M:%S"),
+            r["nombre"], r["departamento"] or SIN_AREA, r["tipo"].upper(),
+        ]),
+        [14, 12, 28, 22, 12],
+    )
+    wb.active.title = "Registros"
+
+    # --- Hoja 2: detalle diario de horas extras ---
+    def _nota(d):
+        notas = []
+        if d["no_laboral"]:
+            notas.append("Dia no laboral")
+        if d["incompleto"]:
+            notas.append("Falta marcar salida")
+        return " / ".join(notas)
+
+    detalle_ext = [d for d in periodo["detalle"] if d["extra_bruto_min"] > 0 or d["incompleto"]]
+    armar_hoja(
+        wb.create_sheet("Horas Extras"),
+        f"NEVOX FARMA - Horas extras {desde} al {hasta} "
+        f"(minimo {periodo['reglas']['minimo']} min, redondeo {periodo['reglas']['redondeo']} min)",
+        ["Empleado", "Area", "Fecha", "Dia", "Entrada", "Salida",
+         "Salida programada", "Horas trabajadas", "Extra registrada (min)",
+         "Extra validada (min)", "Extra validada (hrs)", "Observacion"],
+        agrupar(
+            detalle_ext,
+            lambda d: [
+                d["nombre"], d["departamento"], d["fecha"], d["dia"],
+                d["entrada"], d["salida"], d["salida_programada"] or "-",
+                d["horas_trabajadas"], d["extra_bruto_min"], d["extra_min"],
+                d["extra_horas"], _nota(d),
+            ],
+            lambda area, g: [
+                f"Subtotal {area}", "", "", "", "", "", "",
+                round(sum(x["horas_trabajadas"] for x in g), 2), "",
+                sum(x["extra_min"] for x in g),
+                round(sum(x["extra_horas"] for x in g), 2), "",
+            ],
+        ),
+        [26, 20, 12, 12, 10, 10, 18, 16, 20, 18, 18, 24],
+    )
+
+    # --- Hoja 3: retardos, con la fila en rojo cuando excede la tolerancia ---
+    tol = int(db_get_config("tolerancia_minutos") or "15")
+    retardos_ord = sorted(retardos, key=lambda r: (r["departamento"], r["nombre"], r["fecha"]))
+    armar_hoja(
+        wb.create_sheet("Retardos"),
+        f"NEVOX FARMA - Retardos {desde} al {hasta} (tolerancia {tol} min; "
+        f"en rojo los que la exceden)",
+        ["Empleado", "Area", "Fecha", "Dia", "Hora programada", "Hora registro",
+         "Minutos tarde", "Estado"],
+        agrupar(
+            retardos_ord,
+            lambda r: [
+                r["nombre"], r["departamento"], r["fecha"], r["dia"],
+                r["hora_programada"], r["hora_registro"], r["minutos_tarde"],
+                "Dentro de tolerancia" if r["con_tolerancia"] else "RETARDO",
+            ],
+            lambda area, g: [
+                f"Subtotal {area}", "", "", "", "",
+                f"{sum(1 for x in g if not x['con_tolerancia'])} retardos",
+                sum(x["minutos_tarde"] for x in g), f"{len(g)} llegadas tarde",
+            ],
+            alerta_fn=lambda r: not r["con_tolerancia"],
+        ),
+        [26, 20, 12, 12, 18, 16, 14, 22],
+    )
+
+    # --- Hoja 4: resumen por empleado ---
+    armar_hoja(
+        wb.create_sheet("Resumen"),
+        f"NEVOX FARMA - Resumen {desde} al {hasta}",
+        ["Empleado", "Area", "Horas trabajadas", "Horas extras",
+         "Extras dias habiles", "Extras fin de semana", "Dias con extra",
+         "Dias sin salida"],
+        agrupar(
+            periodo["resumen"],
+            lambda r: [
+                r["nombre"], r["departamento"], r["horas"], r["extras_horas"],
+                r["extras_habil_horas"], r["extras_no_laboral_horas"],
+                r["dias_con_extra"], r["dias_incompletos"],
+            ],
+            lambda area, g: [
+                f"Subtotal {area}", "",
+                round(sum(x["horas"] for x in g), 2),
+                round(sum(x["extras_horas"] for x in g), 2),
+                round(sum(x["extras_habil_horas"] for x in g), 2),
+                round(sum(x["extras_no_laboral_horas"] for x in g), 2),
+                sum(x["dias_con_extra"] for x in g),
+                sum(x["dias_incompletos"] for x in g),
+            ],
+        ),
+        [26, 20, 18, 14, 18, 20, 16, 16],
+    )
 
     buf = BytesIO()
     wb.save(buf)
