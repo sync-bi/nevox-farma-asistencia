@@ -1416,6 +1416,14 @@ def api_reportes_retardos():
     })
 
 
+# Hojas del Excel, en el orden en que se arman. Cada pestana de Reportes pide
+# la suya con ?hojas=...; sin el parametro salen las cuatro, que es lo que hace
+# la pestana "Exportar a Excel".
+HOJAS_EXCEL = ("registros", "extras", "retardos", "resumen")
+NOMBRE_HOJA = {"registros": "Registros", "extras": "Horas Extras",
+               "retardos": "Retardos", "resumen": "Resumen"}
+
+
 @app.route("/api/reportes/exportar-excel")
 def api_exportar_excel():
     from openpyxl import Workbook
@@ -1426,13 +1434,24 @@ def api_exportar_excel():
     if eid:
         eid = int(eid)
     area_filtro = request.args.get("departamento") or None
-    regs = db_registros_rango(desde, hasta, eid)
-    if area_filtro:
-        regs = [r for r in regs if (r["departamento"] or SIN_AREA) == area_filtro]
-    periodo = db_resumen_periodo(desde, hasta, eid, area_filtro)
-    retardos, ret_sin_corregir = db_retardos(desde, hasta, area_filtro)
-    if eid:
-        retardos = [r for r in retardos if r["empleado_id"] == eid]
+    pedidas = {h.strip() for h in (request.args.get("hojas") or "").split(",") if h.strip()}
+    hojas = [h for h in HOJAS_EXCEL if h in pedidas] or list(HOJAS_EXCEL)
+
+    # Solo se consulta lo que se va a escribir: bajar una hoja no debe costar
+    # las cuatro consultas a Supabase.
+    regs = []
+    if "registros" in hojas:
+        regs = db_registros_rango(desde, hasta, eid)
+        if area_filtro:
+            regs = [r for r in regs if (r["departamento"] or SIN_AREA) == area_filtro]
+    periodo = {"detalle": [], "resumen": [], "reglas": db_get_reglas_extras()}
+    if "extras" in hojas or "resumen" in hojas:
+        periodo = db_resumen_periodo(desde, hasta, eid, area_filtro)
+    retardos, ret_sin_corregir = [], 0
+    if "retardos" in hojas:
+        retardos, ret_sin_corregir = db_retardos(desde, hasta, area_filtro)
+        if eid:
+            retardos = [r for r in retardos if r["empleado_id"] == eid]
 
     hf = Font(bold=True, color="FFFFFF", size=11)
     hfill = PatternFill(start_color="ea8511", end_color="ea8511", fill_type="solid")
@@ -1511,116 +1530,126 @@ def api_exportar_excel():
         return filas
 
     wb = Workbook()
+    wb.remove(wb.active)  # las hojas se crean abajo, solo las pedidas
 
     # --- Hoja 1: registros crudos, agrupados por area ---
-    regs_ord = sorted(regs, key=lambda r: ((r["departamento"] or SIN_AREA), r["nombre"], r["fecha_hora"]))
-    armar_hoja(
-        wb.active, f"NEVOX FARMA - Registros {desde} al {hasta}",
-        ["Fecha", "Hora", "Empleado", "Area", "Tipo"],
-        agrupar(regs_ord, lambda r: [
-            datetime.fromisoformat(r["fecha_hora"]).strftime("%Y-%m-%d"),
-            datetime.fromisoformat(r["fecha_hora"]).strftime("%H:%M:%S"),
-            r["nombre"], r["departamento"] or SIN_AREA, r["tipo"].upper(),
-        ]),
-        [14, 12, 28, 22, 12],
-    )
-    wb.active.title = "Registros"
+    if "registros" in hojas:
+        regs_ord = sorted(regs, key=lambda r: ((r["departamento"] or SIN_AREA), r["nombre"], r["fecha_hora"]))
+        armar_hoja(
+            wb.create_sheet(NOMBRE_HOJA["registros"]),
+            f"NEVOX FARMA - Registros {desde} al {hasta}",
+            ["Fecha", "Hora", "Empleado", "Area", "Tipo"],
+            agrupar(regs_ord, lambda r: [
+                datetime.fromisoformat(r["fecha_hora"]).strftime("%Y-%m-%d"),
+                datetime.fromisoformat(r["fecha_hora"]).strftime("%H:%M:%S"),
+                r["nombre"], r["departamento"] or SIN_AREA, r["tipo"].upper(),
+            ]),
+            [14, 12, 28, 22, 12],
+        )
 
     # --- Hoja 2: detalle diario de horas extras ---
-    def _nota(d):
-        notas = []
-        if d["no_laboral"]:
-            notas.append("Dia no laboral")
-        if d["revisar"]:
-            notas.append(d["motivo"])
-        return " / ".join(notas)
+    if "extras" in hojas:
+        def _nota(d):
+            notas = []
+            if d["no_laboral"]:
+                notas.append("Dia no laboral")
+            if d["revisar"]:
+                notas.append(d["motivo"])
+            return " / ".join(notas)
 
-    detalle_ext = [d for d in periodo["detalle"] if d["extra_bruto_min"] > 0 or d["revisar"]]
-    armar_hoja(
-        wb.create_sheet("Horas Extras"),
-        f"NEVOX FARMA - Horas extras {desde} al {hasta} "
-        f"(minimo {periodo['reglas']['minimo']} min, redondeo {periodo['reglas']['redondeo']} min)",
-        ["Empleado", "Area", "Fecha", "Dia", "Entrada", "Salida",
-         "Salida programada", "Horas trabajadas", "Extra registrada (min)",
-         "Extra validada (min)", "Extra validada (hrs)", "Observacion"],
-        agrupar(
-            detalle_ext,
-            lambda d: [
-                d["nombre"], d["departamento"], d["fecha"], d["dia"],
-                d["entrada"], d["salida"], d["salida_programada"] or "-",
-                d["horas_trabajadas"], d["extra_bruto_min"], d["extra_min"],
-                d["extra_horas"], _nota(d),
-            ],
-            lambda area, g: [
-                f"Subtotal {area}", "", "", "", "", "", "",
-                round(sum(x["horas_trabajadas"] for x in g), 2), "",
-                sum(x["extra_min"] for x in g),
-                round(sum(x["extra_horas"] for x in g), 2), "",
-            ],
-        ),
-        [26, 20, 12, 12, 10, 10, 18, 16, 20, 18, 18, 24],
-    )
+        # Igual que la pestana: por defecto solo los dias con extra o por
+        # revisar, pero si se destildo la casilla van todos los dias.
+        detalle_ext = periodo["detalle"]
+        if request.args.get("solo_extras", "1") == "1":
+            detalle_ext = [d for d in detalle_ext if d["extra_bruto_min"] > 0 or d["revisar"]]
+        armar_hoja(
+            wb.create_sheet(NOMBRE_HOJA["extras"]),
+            f"NEVOX FARMA - Horas extras {desde} al {hasta} "
+            f"(minimo {periodo['reglas']['minimo']} min, redondeo {periodo['reglas']['redondeo']} min)",
+            ["Empleado", "Area", "Fecha", "Dia", "Entrada", "Salida",
+             "Salida programada", "Horas trabajadas", "Extra registrada (min)",
+             "Extra validada (min)", "Extra validada (hrs)", "Observacion"],
+            agrupar(
+                detalle_ext,
+                lambda d: [
+                    d["nombre"], d["departamento"], d["fecha"], d["dia"],
+                    d["entrada"], d["salida"], d["salida_programada"] or "-",
+                    d["horas_trabajadas"], d["extra_bruto_min"], d["extra_min"],
+                    d["extra_horas"], _nota(d),
+                ],
+                lambda area, g: [
+                    f"Subtotal {area}", "", "", "", "", "", "",
+                    round(sum(x["horas_trabajadas"] for x in g), 2), "",
+                    sum(x["extra_min"] for x in g),
+                    round(sum(x["extra_horas"] for x in g), 2), "",
+                ],
+            ),
+            [26, 20, 12, 12, 10, 10, 18, 16, 20, 18, 18, 24],
+        )
 
     # --- Hoja 3: retardos, con la fila en rojo cuando excede la tolerancia ---
-    tol = int(db_get_config("tolerancia_minutos") or "15")
-    retardos_ord = sorted(retardos, key=lambda r: (r["departamento"], r["nombre"], r["fecha"]))
-    armar_hoja(
-        wb.create_sheet("Retardos"),
-        f"NEVOX FARMA - Retardos {desde} al {hasta} (tolerancia {tol} min; "
-        f"en rojo los que la exceden)"
-        + (f" - {ret_sin_corregir} dia(s) excluidos por marcas sin corregir"
-           if ret_sin_corregir else ""),
-        ["Empleado", "Area", "Fecha", "Dia", "Hora programada", "Hora registro",
-         "Minutos tarde", "Estado"],
-        agrupar(
-            retardos_ord,
-            lambda r: [
-                r["nombre"], r["departamento"], r["fecha"], r["dia"],
-                r["hora_programada"], r["hora_registro"], r["minutos_tarde"],
-                "Dentro de tolerancia" if r["con_tolerancia"] else "RETARDO",
-            ],
-            lambda area, g: [
-                f"Subtotal {area}", "", "", "", "",
-                f"{sum(1 for x in g if not x['con_tolerancia'])} retardos",
-                sum(x["minutos_tarde"] for x in g), f"{len(g)} llegadas tarde",
-            ],
-            alerta_fn=lambda r: not r["con_tolerancia"],
-        ),
-        [26, 20, 12, 12, 18, 16, 14, 22],
-    )
+    if "retardos" in hojas:
+        tol = int(db_get_config("tolerancia_minutos") or "15")
+        retardos_ord = sorted(retardos, key=lambda r: (r["departamento"], r["nombre"], r["fecha"]))
+        armar_hoja(
+            wb.create_sheet(NOMBRE_HOJA["retardos"]),
+            f"NEVOX FARMA - Retardos {desde} al {hasta} (tolerancia {tol} min; "
+            f"en rojo los que la exceden)"
+            + (f" - {ret_sin_corregir} dia(s) excluidos por marcas sin corregir"
+               if ret_sin_corregir else ""),
+            ["Empleado", "Area", "Fecha", "Dia", "Hora programada", "Hora registro",
+             "Minutos tarde", "Estado"],
+            agrupar(
+                retardos_ord,
+                lambda r: [
+                    r["nombre"], r["departamento"], r["fecha"], r["dia"],
+                    r["hora_programada"], r["hora_registro"], r["minutos_tarde"],
+                    "Dentro de tolerancia" if r["con_tolerancia"] else "RETARDO",
+                ],
+                lambda area, g: [
+                    f"Subtotal {area}", "", "", "", "",
+                    f"{sum(1 for x in g if not x['con_tolerancia'])} retardos",
+                    sum(x["minutos_tarde"] for x in g), f"{len(g)} llegadas tarde",
+                ],
+                alerta_fn=lambda r: not r["con_tolerancia"],
+            ),
+            [26, 20, 12, 12, 18, 16, 14, 22],
+        )
 
     # --- Hoja 4: resumen por empleado ---
-    armar_hoja(
-        wb.create_sheet("Resumen"),
-        f"NEVOX FARMA - Resumen {desde} al {hasta}",
-        ["Empleado", "Area", "Horas trabajadas", "Horas extras",
-         "Extras dias habiles", "Extras fin de semana", "Dias con extra",
-         "Dias sin salida"],
-        agrupar(
-            periodo["resumen"],
-            lambda r: [
-                r["nombre"], r["departamento"], r["horas"], r["extras_horas"],
-                r["extras_habil_horas"], r["extras_no_laboral_horas"],
-                r["dias_con_extra"], r["dias_incompletos"],
-            ],
-            lambda area, g: [
-                f"Subtotal {area}", "",
-                round(sum(x["horas"] for x in g), 2),
-                round(sum(x["extras_horas"] for x in g), 2),
-                round(sum(x["extras_habil_horas"] for x in g), 2),
-                round(sum(x["extras_no_laboral_horas"] for x in g), 2),
-                sum(x["dias_con_extra"] for x in g),
-                sum(x["dias_incompletos"] for x in g),
-            ],
-        ),
-        [26, 20, 18, 14, 18, 20, 16, 16],
-    )
+    if "resumen" in hojas:
+        armar_hoja(
+            wb.create_sheet(NOMBRE_HOJA["resumen"]),
+            f"NEVOX FARMA - Resumen {desde} al {hasta}",
+            ["Empleado", "Area", "Horas trabajadas", "Horas extras",
+             "Extras dias habiles", "Extras fin de semana", "Dias con extra",
+             "Dias sin salida"],
+            agrupar(
+                periodo["resumen"],
+                lambda r: [
+                    r["nombre"], r["departamento"], r["horas"], r["extras_horas"],
+                    r["extras_habil_horas"], r["extras_no_laboral_horas"],
+                    r["dias_con_extra"], r["dias_incompletos"],
+                ],
+                lambda area, g: [
+                    f"Subtotal {area}", "",
+                    round(sum(x["horas"] for x in g), 2),
+                    round(sum(x["extras_horas"] for x in g), 2),
+                    round(sum(x["extras_habil_horas"] for x in g), 2),
+                    round(sum(x["extras_no_laboral_horas"] for x in g), 2),
+                    sum(x["dias_con_extra"] for x in g),
+                    sum(x["dias_incompletos"] for x in g),
+                ],
+            ),
+            [26, 20, 18, 14, 18, 20, 16, 16],
+        )
 
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
+    nombre = hojas[0] if len(hojas) == 1 else "registros"
     return send_file(
         buf, as_attachment=True,
-        download_name=f"registros_{desde}_{hasta}.xlsx",
+        download_name=f"{nombre}_{desde}_{hasta}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

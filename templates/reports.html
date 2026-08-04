@@ -123,6 +123,7 @@ tr.row-tarde:hover td { background: #fde8e8; }
                 </select>
             </div>
             <button class="btn btn-primary btn-sm" onclick="queryHours()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="downloadHours()">Descargar Excel</button>
             <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
         </div>
         <div id="horas-print" class="print-only print-head"></div>
@@ -173,6 +174,7 @@ tr.row-tarde:hover td { background: #fde8e8; }
                 Solo dias con hora extra
             </label>
             <button class="btn btn-primary btn-sm" onclick="queryOvertime()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="downloadOvertime()">Descargar Excel</button>
             <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
         </div>
         <div id="ext-print" class="print-only print-head"></div>
@@ -221,6 +223,7 @@ tr.row-tarde:hover td { background: #fde8e8; }
                 </select>
             </div>
             <button class="btn btn-primary btn-sm" onclick="queryTardiness()">Consultar</button>
+            <button class="btn btn-secondary btn-sm" onclick="downloadTardiness()">Descargar Excel</button>
             <button class="btn btn-secondary btn-sm" onclick="window.print()">Imprimir</button>
         </div>
         <div id="ret-print" class="print-only print-head"></div>
@@ -542,17 +545,31 @@ async function queryTardiness() {
     );
 }
 
-function exportExcel() {
-    const desde = document.getElementById('exp-desde').value;
-    const hasta = document.getElementById('exp-hasta').value;
+// Cada pestana baja SU hoja con SUS filtros; la pestana "Exportar a Excel"
+// sigue bajando el libro completo. prefijo = 'horas' | 'ext' | 'ret' | 'exp'.
+function downloadExcel(prefijo, hojas, extra) {
+    const desde = document.getElementById(prefijo + '-desde').value;
+    const hasta = document.getElementById(prefijo + '-hasta').value;
     if (!desde || !hasta) { alert('Selecciona ambas fechas.'); return; }
     let url = `/api/reportes/exportar-excel?desde=${desde}&hasta=${hasta}`;
-    const area = document.getElementById('exp-area').value;
+    if (hojas) url += `&hojas=${hojas}`;
+    const area = document.getElementById(prefijo + '-area').value;
     if (area) url += `&departamento=${encodeURIComponent(area)}`;
-    const empId = document.getElementById('exp-empleado').value;
-    if (empId) url += `&empleado_id=${empId}`;
-    window.location.href = url;
+    const emp = document.getElementById(prefijo + '-empleado');
+    if (emp && emp.value) url += `&empleado_id=${emp.value}`;
+    window.location.href = url + (extra || '');
 }
+
+function downloadHours() { downloadExcel('horas', 'resumen'); }
+
+function downloadOvertime() {
+    const solo = document.getElementById('ext-solo').checked ? '1' : '0';
+    downloadExcel('ext', 'extras', `&solo_extras=${solo}`);
+}
+
+function downloadTardiness() { downloadExcel('ret', 'retardos'); }
+
+function exportExcel() { downloadExcel('exp'); }
 
 setDefaultDates();
 loadAreaSelects();
