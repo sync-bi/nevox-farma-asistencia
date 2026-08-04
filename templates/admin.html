@@ -192,6 +192,17 @@ tr.inactive td { color: var(--gris); }
                         marca de la tarde se lea como una llegada de 10 horas tarde.
                     </p>
                 </div>
+                <div class="input-group full-width">
+                    <label>Margen para marcar la salida (min)</label>
+                    <input type="number" id="cfg-margen-salida" min="0">
+                    <p class="section-help" style="margin-top:6px;margin-bottom:0;">
+                        Con la entrada ya marcada, el siguiente escaneo se rechaza hasta
+                        este margen antes de la hora de salida. Con 60 min y jornada hasta
+                        las 16:00, se puede marcar la salida desde las 15:00. Sirve para que
+                        quien termina un poco antes no se quede sin marcar. Con 0 no se
+                        puede marcar ni un minuto antes de la hora de salida.
+                    </p>
+                </div>
                 <div class="input-group">
                     <label>Minimo para contar hora extra (min)</label>
                     <input type="number" id="cfg-ext-min" min="0">
@@ -624,6 +635,7 @@ async function loadConfig() {
     document.getElementById('cfg-antirrebote').value = data.checkin_antirrebote_segundos;
     document.getElementById('cfg-jornada-min').value = data.jornada_minima_minutos;
     document.getElementById('cfg-corte-entrada').value = data.hora_corte_entrada;
+    document.getElementById('cfg-margen-salida').value = data.margen_salida_minutos;
     renderHorario(data.dias_semana, data.horario_semanal);
 }
 
@@ -636,6 +648,7 @@ async function saveConfig() {
         checkin_antirrebote_segundos: document.getElementById('cfg-antirrebote').value,
         jornada_minima_minutos: document.getElementById('cfg-jornada-min').value,
         hora_corte_entrada: document.getElementById('cfg-corte-entrada').value,
+        margen_salida_minutos: document.getElementById('cfg-margen-salida').value,
         horario_semanal: readHorario(),
     };
     const pass = document.getElementById('cfg-pass').value;

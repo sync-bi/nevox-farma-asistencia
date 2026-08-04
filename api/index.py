@@ -243,6 +243,21 @@ def db_get_hora_corte_entrada():
     return v[:5] if _hhmm_valido(v) else HORA_CORTE_ENTRADA_DEFAULT
 
 
+# Cuanto antes de la hora de salida programada se acepta marcar la salida. Con
+# la entrada ya marcada el resto de escaneos se rechaza, pero sin este margen
+# quien termina un poco antes se queda sin poder marcar y el dia queda abierto:
+# en julio el 28% de las salidas fueron antes de la hora programada.
+MARGEN_SALIDA_DEFAULT = 60  # minutos
+
+
+def db_get_margen_salida():
+    try:
+        v = int(db_get_config("margen_salida_minutos"))
+        return v if v >= 0 else MARGEN_SALIDA_DEFAULT
+    except (TypeError, ValueError):
+        return MARGEN_SALIDA_DEFAULT
+
+
 def db_registros_hoy_empleado(emp_id, fecha=None):
     """Marcas del empleado en el dia local indicado, en orden ascendente."""
     fecha = fecha or today_local().isoformat()
@@ -1022,14 +1037,17 @@ def api_checkin():
     if entradas and not salidas:
         ahora = now_local()
         turno = db_get_horario_semanal()[str(ahora.date().weekday())]
-        if turno and ahora.strftime("%H:%M") < turno["salida"]:
-            hora_ent = to_local(entradas[0]["fecha_hora"])
-            return jsonify({
-                "ok": False, "aviso": True, "nombre": emp["nombre"],
-                "mensaje": f"Ya marcaste tu entrada a las {hora_ent:%H:%M}. Tu salida se "
-                           f"registra al terminar la jornada, desde las {turno['salida']}. "
-                           f"Si necesitas salir antes, avisa a Recursos Humanos.",
-            }), 409
+        if turno:
+            abre = max(0, _minutos_del_dia(turno["salida"]) - db_get_margen_salida())
+            if _minutos_del_dia(ahora.strftime("%H:%M")) < abre:
+                hora_ent = to_local(entradas[0]["fecha_hora"])
+                return jsonify({
+                    "ok": False, "aviso": True, "nombre": emp["nombre"],
+                    "mensaje": f"Ya marcaste tu entrada a las {hora_ent:%H:%M}. Tu jornada "
+                               f"termina a las {turno['salida']} y la salida se puede marcar "
+                               f"desde las {abre // 60:02d}:{abre % 60:02d}. Si necesitas "
+                               f"salir antes, avisa a Recursos Humanos.",
+                }), 409
 
     # Dia que empezo con una salida (nadie marco entrada antes de la hora de
     # corte): los escaneos siguientes NO crean una entrada de la tarde, que
@@ -1203,6 +1221,7 @@ def api_admin_get_config():
         "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15",
         "horario_semanal": db_get_horario_semanal(),
         "hora_corte_entrada": db_get_hora_corte_entrada(),
+        "margen_salida_minutos": db_get_margen_salida(),
         "dias_semana": DIAS_SEMANA,
         "extras_minimo_minutos": reglas["minimo"],
         "extras_redondeo_minutos": reglas["redondeo"],
@@ -1230,7 +1249,8 @@ def api_admin_save_config():
     for clave, etiqueta in [("extras_minimo_minutos", "minimo de hora extra"),
                             ("extras_redondeo_minutos", "redondeo de hora extra"),
                             ("checkin_antirrebote_segundos", "anti-rebote de check-in"),
-                            ("jornada_minima_minutos", "jornada minima")]:
+                            ("jornada_minima_minutos", "jornada minima"),
+                            ("margen_salida_minutos", "margen para marcar la salida")]:
         if clave in data:
             try:
                 v = int(data[clave])
