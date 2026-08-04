@@ -617,7 +617,12 @@ def _minutos_entre(hhmm_ini, hhmm_fin):
 
 def db_retardos(desde, hasta, departamento=None):
     """Retardos del periodo. La hora de entrada sale del horario semanal
-    (misma fuente que las horas extras), no de empleados.hora_entrada."""
+    (misma fuente que las horas extras), no de empleados.hora_entrada.
+
+    Devuelve (retardos, sin_corregir): el segundo es el numero de dias que se
+    dejaron fuera por tener la marca mal tipada. Ver el filtro del punto medio
+    mas abajo.
+    """
     emp_map = {e["id"]: e for e in db_listar_empleados()}
     horario = db_get_horario_semanal()
     tol = int(db_get_config("tolerancia_minutos") or "15")
@@ -636,6 +641,7 @@ def db_retardos(desde, hasta, departamento=None):
             primeras[key] = hhmm
 
     retardos = []
+    sin_corregir = 0
     for (emp_id, fecha), hora_reg in sorted(primeras.items()):
         emp = emp_map.get(emp_id)
         if not emp:
@@ -648,6 +654,15 @@ def db_retardos(desde, hasta, departamento=None):
             continue  # dia no laboral: trabajar ahi no es un retardo
         hora_limite = turno["entrada"]
         if hora_reg <= hora_limite:
+            continue
+        # Una "entrada" despues del punto medio de la jornada no es una llegada
+        # tarde de 10 horas: es la salida de quien olvido marcar en la manana,
+        # guardada como entrada por la alternancia vieja. Se usa el mismo punto
+        # medio con que el check-in decide el tipo de la primera marca, asi el
+        # reporte no contradice a la app. Esos dias no se pierden: salen en
+        # Admin -> Corregir Registros con su motivo, y aqui se cuentan aparte.
+        if hora_reg >= _punto_medio(turno["entrada"], turno["salida"]):
+            sin_corregir += 1
             continue
         h, m = map(int, hora_limite.split(":"))
         lim = (
@@ -663,7 +678,7 @@ def db_retardos(desde, hasta, departamento=None):
             "minutos_tarde": _minutos_entre(hora_limite, hora_reg),
             "con_tolerancia": hora_reg <= lim,
         })
-    return retardos
+    return retardos, sin_corregir
 
 
 # ------------------------------------------------------------
@@ -1334,8 +1349,10 @@ def api_reportes_horas_extras():
 def api_reportes_retardos():
     desde, hasta = _rango_args()
     area = request.args.get("departamento") or None
+    datos, sin_corregir = db_retardos(desde, hasta, area)
     return jsonify({
-        "datos": db_retardos(desde, hasta, area),
+        "datos": datos,
+        "sin_corregir": sin_corregir,
         "tolerancia": int(db_get_config("tolerancia_minutos") or "15"),
         "desde": desde, "hasta": hasta,
     })
@@ -1355,7 +1372,7 @@ def api_exportar_excel():
     if area_filtro:
         regs = [r for r in regs if (r["departamento"] or SIN_AREA) == area_filtro]
     periodo = db_resumen_periodo(desde, hasta, eid, area_filtro)
-    retardos = db_retardos(desde, hasta, area_filtro)
+    retardos, ret_sin_corregir = db_retardos(desde, hasta, area_filtro)
     if eid:
         retardos = [r for r in retardos if r["empleado_id"] == eid]
 
@@ -1492,7 +1509,9 @@ def api_exportar_excel():
     armar_hoja(
         wb.create_sheet("Retardos"),
         f"NEVOX FARMA - Retardos {desde} al {hasta} (tolerancia {tol} min; "
-        f"en rojo los que la exceden)",
+        f"en rojo los que la exceden)"
+        + (f" - {ret_sin_corregir} dia(s) excluidos por marcas sin corregir"
+           if ret_sin_corregir else ""),
         ["Empleado", "Area", "Fecha", "Dia", "Hora programada", "Hora registro",
          "Minutos tarde", "Estado"],
         agrupar(

@@ -497,8 +497,17 @@ async function queryTardiness() {
     setPrintHead('ret-print', 'Retardos', desde, hasta, area);
 
     const rules = document.getElementById('ret-rules');
-    rules.textContent = `Tolerancia de ${data.tolerancia} min sobre la hora de entrada `
+    let nota = `Tolerancia de ${data.tolerancia} min sobre la hora de entrada `
         + `del horario semanal. En rojo, las llegadas que exceden la tolerancia.`;
+    // Los dias que quedaron con la marca mal tipada no se reportan como retardo,
+    // pero tampoco se callan: se dice cuantos son y donde se arreglan.
+    if (data.sin_corregir) {
+        const plural = data.sin_corregir === 1 ? '' : 's';
+        nota += ` ${data.sin_corregir} dia${plural} no se muestra${plural ? 'n' : ''} `
+            + `porque tiene${plural ? 'n' : ''} marcas sin corregir (la unica marca del dia `
+            + `es de la tarde): se arreglan en Admin → Corregir Registros.`;
+    }
+    rules.textContent = nota;
     rules.style.display = 'block';
 
     const tbody = document.getElementById('ret-body');
