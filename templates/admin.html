@@ -182,6 +182,16 @@ tr.inactive td { color: var(--gris); }
                         <tbody id="horario-body"></tbody>
                     </table>
                 </div>
+                <div class="input-group full-width">
+                    <label>Hora tope para marcar entrada</label>
+                    <input type="time" id="cfg-corte-entrada">
+                    <p class="section-help" style="margin-top:6px;margin-bottom:0;">
+                        Desde esta hora ya no se puede registrar una entrada. Quien no marco
+                        en la manana ve su escaneo guardado como SALIDA y el dia queda sin
+                        entrada, para que se corrija en "Corregir Registros". Evita que una
+                        marca de la tarde se lea como una llegada de 10 horas tarde.
+                    </p>
+                </div>
                 <div class="input-group">
                     <label>Minimo para contar hora extra (min)</label>
                     <input type="number" id="cfg-ext-min" min="0">
@@ -613,6 +623,7 @@ async function loadConfig() {
     document.getElementById('cfg-ext-redondeo').value = data.extras_redondeo_minutos;
     document.getElementById('cfg-antirrebote').value = data.checkin_antirrebote_segundos;
     document.getElementById('cfg-jornada-min').value = data.jornada_minima_minutos;
+    document.getElementById('cfg-corte-entrada').value = data.hora_corte_entrada;
     renderHorario(data.dias_semana, data.horario_semanal);
 }
 
@@ -624,6 +635,7 @@ async function saveConfig() {
         extras_redondeo_minutos: document.getElementById('cfg-ext-redondeo').value,
         checkin_antirrebote_segundos: document.getElementById('cfg-antirrebote').value,
         jornada_minima_minutos: document.getElementById('cfg-jornada-min').value,
+        hora_corte_entrada: document.getElementById('cfg-corte-entrada').value,
         horario_semanal: readHorario(),
     };
     const pass = document.getElementById('cfg-pass').value;

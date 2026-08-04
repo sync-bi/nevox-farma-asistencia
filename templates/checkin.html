@@ -252,11 +252,12 @@
                         ${data.duplicado ? '<span class="hint">Ya estaba registrado. No se creo un registro nuevo.</span>' : ''}
                         ${data.recordatorio ? '<span class="hint hint-aviso">' + data.recordatorio + '</span>' : ''}
                     `;
-                } else if (data.jornada_completa) {
-                    // No es un error del empleado: ya marco entrada y salida.
+                } else if (data.jornada_completa || data.aviso) {
+                    // No es un error del empleado: o ya marco entrada y salida,
+                    // o todavia no es hora de marcar la salida.
                     resultadoEl.className = "status-box status-info";
                     resultadoEl.innerHTML = `
-                        <div class="icon">&#9989;</div>
+                        <div class="icon">${data.aviso ? '&#9203;' : '&#9989;'}</div>
                         <p class="nombre">${data.nombre}</p>
                         <p class="msg">${data.mensaje}</p>`;
                 } else {

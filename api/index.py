@@ -230,11 +230,17 @@ def _minutos_del_dia(hhmm):
     return h * 60 + m
 
 
-def _punto_medio(hhmm_a, hhmm_b):
-    a = _minutos_del_dia(hhmm_a)
-    b = _minutos_del_dia(hhmm_b)
-    med = (a + b) // 2
-    return f"{med // 60:02d}:{med % 60:02d}"
+# Hora tope para marcar entrada. Pasada esta hora ya no se puede registrar una
+# entrada: quien no marco en la manana ve su escaneo guardado como salida y el
+# dia queda sin entrada a proposito, para que Recursos Humanos ponga la hora
+# real. Antes se usaba el punto medio de la jornada (~11:45), que aceptaba como
+# "llegada" marcas de media manana que en realidad eran salidas.
+HORA_CORTE_ENTRADA_DEFAULT = "10:00"
+
+
+def db_get_hora_corte_entrada():
+    v = db_get_config("hora_corte_entrada")
+    return v[:5] if _hhmm_valido(v) else HORA_CORTE_ENTRADA_DEFAULT
 
 
 def db_registros_hoy_empleado(emp_id, fecha=None):
@@ -248,13 +254,11 @@ def db_registros_hoy_empleado(emp_id, fecha=None):
     ], order="fecha_hora.asc")
 
 
-def tipo_por_hora(momento, horario=None):
-    """Tipo de la PRIMERA marca del dia, decidido por la hora: antes del punto
-    medio de la jornada es entrada, despues es salida."""
-    turno = (horario or db_get_horario_semanal())[str(momento.date().weekday())]
-    if not turno:
-        return "entrada"  # dia no laboral: no hay jornada de referencia
-    return "entrada" if momento.strftime("%H:%M") < _punto_medio(turno["entrada"], turno["salida"]) else "salida"
+def tipo_por_hora(momento, corte=None):
+    """Tipo de la PRIMERA marca del dia, decidido por la hora de corte: antes
+    es entrada, desde la hora de corte en adelante es salida. Se aplica igual
+    en dia no laboral, porque el corte no depende de la jornada."""
+    return "entrada" if momento.strftime("%H:%M") < (corte or db_get_hora_corte_entrada()) else "salida"
 
 
 def db_siguiente_tipo(emp_id, momento=None):
@@ -620,12 +624,13 @@ def db_retardos(desde, hasta, departamento=None):
     (misma fuente que las horas extras), no de empleados.hora_entrada.
 
     Devuelve (retardos, sin_corregir): el segundo es el numero de dias que se
-    dejaron fuera por tener la marca mal tipada. Ver el filtro del punto medio
-    mas abajo.
+    dejaron fuera por tener la marca mal tipada. Ver el filtro de la hora de
+    corte mas abajo.
     """
     emp_map = {e["id"]: e for e in db_listar_empleados()}
     horario = db_get_horario_semanal()
     tol = int(db_get_config("tolerancia_minutos") or "15")
+    corte = db_get_hora_corte_entrada()
 
     # Primera ENTRADA (hora local) por empleado y dia, calculada a partir de
     # los registros ya convertidos a UTC-5. Asi la comparacion con la hora
@@ -655,13 +660,13 @@ def db_retardos(desde, hasta, departamento=None):
         hora_limite = turno["entrada"]
         if hora_reg <= hora_limite:
             continue
-        # Una "entrada" despues del punto medio de la jornada no es una llegada
-        # tarde de 10 horas: es la salida de quien olvido marcar en la manana,
-        # guardada como entrada por la alternancia vieja. Se usa el mismo punto
-        # medio con que el check-in decide el tipo de la primera marca, asi el
-        # reporte no contradice a la app. Esos dias no se pierden: salen en
-        # Admin -> Corregir Registros con su motivo, y aqui se cuentan aparte.
-        if hora_reg >= _punto_medio(turno["entrada"], turno["salida"]):
+        # Una "entrada" posterior a la hora de corte no es una llegada tarde de
+        # 10 horas: es la salida de quien olvido marcar en la manana, guardada
+        # como entrada por la alternancia vieja. Se usa la misma hora de corte
+        # con que el check-in decide el tipo de la primera marca, asi el reporte
+        # no contradice a la app. Esos dias no se pierden: salen en Admin ->
+        # Corregir Registros con su motivo, y aqui se cuentan aparte.
+        if hora_reg >= corte:
             sin_corregir += 1
             continue
         h, m = map(int, hora_limite.split(":"))
@@ -1008,16 +1013,63 @@ def api_checkin():
             "recordatorio": f"Se corrigio un registro duplicado de las {ultima:%H:%M}.",
         })
 
-    tipo = ("entrada" if regs_hoy[-1]["tipo"] == "salida" else "salida") if regs_hoy else tipo_por_hora(now_local())
+    # Con la entrada ya marcada no se acepta otro escaneo hasta la hora de
+    # salida programada. Un rescaneo a media manana creaba una salida a los
+    # minutos y dejaba el dia en cero; ahora el segundo escaneo solo cuenta
+    # cuando de verdad termina la jornada. Quien deba salir antes lo tramita
+    # con Recursos Humanos. En dia no laboral no hay hora de salida programada,
+    # asi que ahi no se bloquea nada.
+    if entradas and not salidas:
+        ahora = now_local()
+        turno = db_get_horario_semanal()[str(ahora.date().weekday())]
+        if turno and ahora.strftime("%H:%M") < turno["salida"]:
+            hora_ent = to_local(entradas[0]["fecha_hora"])
+            return jsonify({
+                "ok": False, "aviso": True, "nombre": emp["nombre"],
+                "mensaje": f"Ya marcaste tu entrada a las {hora_ent:%H:%M}. Tu salida se "
+                           f"registra al terminar la jornada, desde las {turno['salida']}. "
+                           f"Si necesitas salir antes, avisa a Recursos Humanos.",
+            }), 409
+
+    # Dia que empezo con una salida (nadie marco entrada antes de la hora de
+    # corte): los escaneos siguientes NO crean una entrada de la tarde, que
+    # dejaria el dia invertido. Se reubica esa salida a la hora real. El dia
+    # queda sin entrada a proposito, para que Recursos Humanos ponga la que
+    # falta.
+    if salidas and not entradas:
+        ahora = now_local()
+        previa = to_local(salidas[-1]["fecha_hora"])
+        db_mover_salida(salidas[-1]["id"], ahora)
+        return jsonify({
+            "ok": True, "duplicado": False, "corregido": True,
+            "nombre": emp["nombre"], "tipo": "salida",
+            "hora": ahora.strftime("%H:%M:%S"),
+            "mensaje": "Salida registrada.",
+            "recordatorio": f"Hoy no marcaste entrada, asi que tu salida quedo a las "
+                            f"{ahora:%H:%M} (antes {previa:%H:%M}). "
+                            f"Avisa a Recursos Humanos para que registre tu entrada.",
+        })
+
+    corte = db_get_hora_corte_entrada()
+    tipo = ("entrada" if regs_hoy[-1]["tipo"] == "salida" else "salida") if regs_hoy else tipo_por_hora(now_local(), corte)
     creado = db_registrar_asistencia(emp_id, tipo, tqr)
     hora = to_local(creado["fecha_hora"]).strftime("%H:%M:%S") if creado and creado.get("fecha_hora") else now_local().strftime("%H:%M:%S")
+    # El olvido de la salida es lo que mas ensucia los reportes: se avisa en el
+    # momento, que es cuando la persona todavia puede hacer algo. Y si su
+    # primera marca del dia quedo como salida, hay que decirle por que.
+    if tipo == "entrada":
+        recordatorio = "No olvides marcar tu SALIDA al terminar la jornada."
+    elif not regs_hoy:
+        recordatorio = (f"No marcaste entrada antes de las {corte}, asi que este registro "
+                        f"quedo como SALIDA. Avisa a Recursos Humanos para que registre "
+                        f"tu entrada de hoy.")
+    else:
+        recordatorio = ""
     return jsonify({
         "ok": True, "duplicado": False, "nombre": emp["nombre"],
         "tipo": tipo, "hora": hora,
         "mensaje": f"{tipo.capitalize()} registrada.",
-        # El olvido de la salida es lo que mas ensucia los reportes: se avisa
-        # en el momento, que es cuando la persona todavia puede hacer algo.
-        "recordatorio": "No olvides marcar tu SALIDA al terminar la jornada." if tipo == "entrada" else "",
+        "recordatorio": recordatorio,
     })
 
 
@@ -1150,6 +1202,7 @@ def api_admin_get_config():
         "nombre_empresa": db_get_config("nombre_empresa") or "NEVOX FARMA",
         "tolerancia_minutos": db_get_config("tolerancia_minutos") or "15",
         "horario_semanal": db_get_horario_semanal(),
+        "hora_corte_entrada": db_get_hora_corte_entrada(),
         "dias_semana": DIAS_SEMANA,
         "extras_minimo_minutos": reglas["minimo"],
         "extras_redondeo_minutos": reglas["redondeo"],
@@ -1186,6 +1239,11 @@ def api_admin_save_config():
                 db_set_config(clave, str(v))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "mensaje": f"Valor invalido para {etiqueta}."}), 400
+    if "hora_corte_entrada" in data:
+        v = (data["hora_corte_entrada"] or "").strip()
+        if not _hhmm_valido(v):
+            return jsonify({"ok": False, "mensaje": "Hora tope para marcar entrada invalida."}), 400
+        db_set_config("hora_corte_entrada", v[:5])
     if "horario_semanal" in data:
         horario = normalizar_horario(data["horario_semanal"])
         for i in range(7):
