@@ -190,6 +190,11 @@ tr.inactive td { color: var(--gris); }
                     <label>Redondeo de hora extra (min)</label>
                     <input type="number" id="cfg-ext-redondeo" min="0">
                 </div>
+                <div class="input-group">
+                    <label>Jornada minima para no revisar (min)</label>
+                    <input type="number" id="cfg-jornada-min" min="0">
+                </div>
+                <div class="input-group"></div>
                 <div class="input-group full-width">
                     <label>Anti-rebote de check-in (segundos)</label>
                     <input type="number" id="cfg-antirrebote" min="0">
@@ -607,6 +612,7 @@ async function loadConfig() {
     document.getElementById('cfg-ext-min').value = data.extras_minimo_minutos;
     document.getElementById('cfg-ext-redondeo').value = data.extras_redondeo_minutos;
     document.getElementById('cfg-antirrebote').value = data.checkin_antirrebote_segundos;
+    document.getElementById('cfg-jornada-min').value = data.jornada_minima_minutos;
     renderHorario(data.dias_semana, data.horario_semanal);
 }
 
@@ -617,6 +623,7 @@ async function saveConfig() {
         extras_minimo_minutos: document.getElementById('cfg-ext-min').value,
         extras_redondeo_minutos: document.getElementById('cfg-ext-redondeo').value,
         checkin_antirrebote_segundos: document.getElementById('cfg-antirrebote').value,
+        jornada_minima_minutos: document.getElementById('cfg-jornada-min').value,
         horario_semanal: readHorario(),
     };
     const pass = document.getElementById('cfg-pass').value;

@@ -352,6 +352,16 @@ SIN_AREA = "Sin area"  # etiqueta para empleados sin departamento asignado
 # los dias historicos que tengan mas quedan senalados para revision.
 MARCAS_ESPERADAS = 2
 
+# Una jornada por debajo de esto no es un dia real: casi siempre es el rastro
+# de un doble escaneo (entrada y salida con minutos de diferencia). Se marca
+# para revision, no se descarta.
+JORNADA_MINIMA_DEFAULT = 30  # minutos
+
+# Por debajo de esto la pareja entrada/salida es directamente un duplicado: no
+# existe una jornada real de menos de 5 minutos. El check-in lo usa para dejar
+# que la persona marque su salida de verdad en vez de bloquearla.
+DUPLICADO_MAX_MINUTOS = 5
+
 # Horario "Apoyo" informado por NEVOX FARMA (28/07/2026).
 HORARIO_SEMANAL_DEFAULT = {
     "0": {"entrada": "07:00", "salida": "16:00"},   # lunes
@@ -415,9 +425,19 @@ def db_get_reglas_extras():
     }
 
 
-def _jornadas_por_dia(registros):
+def db_get_jornada_minima():
+    try:
+        v = int(db_get_config("jornada_minima_minutos"))
+        return v if v >= 0 else JORNADA_MINIMA_DEFAULT
+    except (TypeError, ValueError):
+        return JORNADA_MINIMA_DEFAULT
+
+
+def _jornadas_por_dia(registros, jornada_minima=None):
     """Agrupa los registros (ya en hora local, orden ascendente) en pares
     entrada/salida por empleado y dia."""
+    if jornada_minima is None:
+        jornada_minima = db_get_jornada_minima()
     dias = {}
     for r in registros:
         dt = datetime.fromisoformat(r["fecha_hora"])
@@ -456,6 +476,11 @@ def _jornadas_por_dia(registros):
         # dia. Mas de dos es una anomalia que hay que revisar aunque el dia
         # cierre bien (tipico de los escaneos duplicados que ya no ocurren).
         d["exceso_marcas"] = max(0, d["marcas"] - MARCAS_ESPERADAS)
+        d["trabajado_min"] = sum((f - i).total_seconds() for i, f in d["pares"]) / 60
+        # Dia que empareja bien pero dura casi nada: pasaba como limpio y en
+        # realidad es un doble escaneo que se comio la jornada entera.
+        d["jornada_corta"] = bool(d["pares"]) and d["trabajado_min"] < jornada_minima
+
         faltantes = []
         if d["entradas_sin_salida"]:
             faltantes.append("Falta salida")
@@ -463,8 +488,10 @@ def _jornadas_por_dia(registros):
             faltantes.append("Falta entrada")
         if d["exceso_marcas"]:
             faltantes.append(f"{d['marcas']} marcas (se esperan {MARCAS_ESPERADAS})")
+        if d["jornada_corta"]:
+            faltantes.append(f"Jornada de {int(round(d['trabajado_min']))} min (revisar)")
         d["motivo"] = " y ".join(faltantes)
-        d["revisar"] = bool(d["incompleto"] or d["exceso_marcas"])
+        d["revisar"] = bool(d["incompleto"] or d["exceso_marcas"] or d["jornada_corta"])
     return dias
 
 
@@ -518,7 +545,7 @@ def db_resumen_periodo(desde, hasta, emp_id=None, departamento=None):
                 fecha_d, datetime.min.time().replace(hour=h, minute=m), tzinfo=LOCAL_TZ
             )
 
-        trabajado = sum((f - i).total_seconds() for i, f in d["pares"]) / 3600
+        trabajado = d["trabajado_min"] / 60
         bruto = _minutos_extra(d["pares"], salida_prog)
         extra = _aplicar_reglas_extras(bruto, reglas)
         detalle.append({
@@ -674,6 +701,15 @@ def db_actualizar_registro(reg_id, fecha=None, hora=None, tipo=None):
 
 def db_eliminar_registro(reg_id):
     _sb_delete("registros", [("id", f"eq.{reg_id}")])
+
+
+def db_mover_salida(reg_id, momento):
+    """Reubica una salida duplicada a la hora real de salida. Queda marcada en
+    token_usado para que se vea de donde salio."""
+    _sb_patch("registros", {
+        "fecha_hora": momento.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        "token_usado": "auto-correccion-duplicado",
+    }, [("id", f"eq.{reg_id}")])
 
 
 def db_sin_cerrar(fecha=None):
@@ -929,14 +965,33 @@ def api_checkin():
 
     # El almuerzo no se marca: dos marcas por dia y nada mas. Un tercer escaneo
     # antes creaba una entrada huerfana que dañaba el dia entero.
-    if any(r["tipo"] == "entrada" for r in regs_hoy) and any(r["tipo"] == "salida" for r in regs_hoy):
-        entrada = next(to_local(r["fecha_hora"]).strftime("%H:%M") for r in regs_hoy if r["tipo"] == "entrada")
-        salida = next(to_local(r["fecha_hora"]).strftime("%H:%M") for r in reversed(regs_hoy) if r["tipo"] == "salida")
+    entradas = [r for r in regs_hoy if r["tipo"] == "entrada"]
+    salidas = [r for r in regs_hoy if r["tipo"] == "salida"]
+    if entradas and salidas:
+        primera = to_local(entradas[0]["fecha_hora"])
+        ultima = to_local(salidas[-1]["fecha_hora"])
+        duracion = (ultima - primera).total_seconds() / 60
+
+        if duracion >= DUPLICADO_MAX_MINUTOS:
+            return jsonify({
+                "ok": False, "jornada_completa": True, "nombre": emp["nombre"],
+                "mensaje": f"Tu jornada de hoy ya esta registrada: entrada {primera:%H:%M} y "
+                           f"salida {ultima:%H:%M}. El almuerzo no se marca. "
+                           f"Si algo esta mal, avisa a Recursos Humanos.",
+            }), 409
+
+        # Entrada y salida a minutos de distancia: no es una jornada, es un
+        # doble escaneo. Se reubica esa salida a la hora real en vez de dejar
+        # a la persona bloqueada con un dia de cero horas.
+        ahora = now_local()
+        db_mover_salida(salidas[-1]["id"], ahora)
         return jsonify({
-            "ok": False, "jornada_completa": True, "nombre": emp["nombre"],
-            "mensaje": f"Tu jornada de hoy ya esta registrada: entrada {entrada} y salida {salida}. "
-                       f"El almuerzo no se marca. Si algo esta mal, avisa a Recursos Humanos.",
-        }), 409
+            "ok": True, "duplicado": False, "corregido": True,
+            "nombre": emp["nombre"], "tipo": "salida",
+            "hora": ahora.strftime("%H:%M:%S"),
+            "mensaje": "Salida registrada.",
+            "recordatorio": f"Se corrigio un registro duplicado de las {ultima:%H:%M}.",
+        })
 
     tipo = ("entrada" if regs_hoy[-1]["tipo"] == "salida" else "salida") if regs_hoy else tipo_por_hora(now_local())
     creado = db_registrar_asistencia(emp_id, tipo, tqr)
@@ -1084,6 +1139,7 @@ def api_admin_get_config():
         "extras_minimo_minutos": reglas["minimo"],
         "extras_redondeo_minutos": reglas["redondeo"],
         "checkin_antirrebote_segundos": db_get_antirrebote(),
+        "jornada_minima_minutos": db_get_jornada_minima(),
     })
 
 
@@ -1105,7 +1161,8 @@ def api_admin_save_config():
             return jsonify({"ok": False, "mensaje": "Tolerancia invalida."}), 400
     for clave, etiqueta in [("extras_minimo_minutos", "minimo de hora extra"),
                             ("extras_redondeo_minutos", "redondeo de hora extra"),
-                            ("checkin_antirrebote_segundos", "anti-rebote de check-in")]:
+                            ("checkin_antirrebote_segundos", "anti-rebote de check-in"),
+                            ("jornada_minima_minutos", "jornada minima")]:
         if clave in data:
             try:
                 v = int(data[clave])
