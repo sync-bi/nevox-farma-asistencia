@@ -206,15 +206,24 @@
 
 {% block scripts %}
 <script>
+// El QR cambia cada 30 s en el servidor. Antes se pedia cada 5 s (6 veces el
+// mismo QR) y eso disparaba el consumo de CPU en Vercel. Ahora se pide una
+// sola vez por cambio y la cuenta regresiva corre en el navegador.
+let qrTimer = null, qrRestante = 0;
 async function refreshQR() {
+    clearTimeout(qrTimer);
+    if (document.hidden) return;  // pantalla oculta: no consultar
     try {
         const resp = await fetch('/api/qr');
         const data = await resp.json();
         document.getElementById('qr-image').src = 'data:image/png;base64,' + data.qr_base64;
-        document.getElementById('qr-countdown').textContent = 'Actualiza en ' + data.remaining_seconds + 's';
         document.getElementById('qr-time').textContent = data.timestamp;
+        qrRestante = data.remaining_seconds;
+        document.getElementById('qr-countdown').textContent = 'Actualiza en ' + qrRestante + 's';
+        qrTimer = setTimeout(refreshQR, (qrRestante + 1) * 1000);
     } catch(e) {
         document.getElementById('qr-countdown').textContent = 'Error al cargar QR';
+        qrTimer = setTimeout(refreshQR, 10000);
     }
 }
 
@@ -302,8 +311,17 @@ async function refreshPendientes() {
 refreshQR();
 refreshRecords();
 refreshPendientes();
-setInterval(refreshQR, 5000);
-setInterval(refreshRecords, 10000);
-setInterval(refreshPendientes, 30000);
+setInterval(() => {
+    if (qrRestante > 1) {
+        qrRestante--;
+        document.getElementById('qr-countdown').textContent = 'Actualiza en ' + qrRestante + 's';
+    }
+}, 1000);
+setInterval(() => { if (!document.hidden) refreshRecords(); }, 30000);
+setInterval(() => { if (!document.hidden) refreshPendientes(); }, 60000);
+// Al volver a mostrar la pantalla, actualizar todo de una vez.
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { refreshQR(); refreshRecords(); refreshPendientes(); }
+});
 </script>
 {% endblock %}
